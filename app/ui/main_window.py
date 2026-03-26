@@ -362,12 +362,15 @@ class MainWindow(ctk.CTk):
         tw.tag_config("sep", font=("Segoe UI", 4), spacing1=4, spacing3=4)
 
         # Willkommensnachricht
-        self._chat_insert(
+        self.chat_display.configure(state="normal")
+        self.chat_display._textbox.insert(
+            "end",
             "Schreibassistent – Stelle Fragen zu deinem Text, "
             "z.B. \"Warum ist das falsch?\", \"Schreib das formeller\" "
             "oder \"Erkläre die Grammatikregel\".\n\n",
             "system",
         )
+        self.chat_display.configure(state="disabled")
 
         # Eingabezeile
         chat_input = ctk.CTkFrame(tab_chat, fg_color="transparent")
@@ -655,9 +658,11 @@ class MainWindow(ctk.CTk):
 
         n = len(errors)
         if n == 0:
-            self._set_status("Keine Fehler gefunden!", "success")
+            self._set_status("✔ Keine Fehler gefunden!", "success")
+            self.result_tabs.set("Korrektur")
         else:
-            self._set_status(f"{n} Fehler gefunden.", "info")
+            self._set_status(f"✔ {n} Fehler gefunden.", "info")
+            self.result_tabs.set("Fehler")
 
     def _highlight_errors(self, errors: list[dict]) -> None:
         try:
@@ -1221,10 +1226,15 @@ class MainWindow(ctk.CTk):
 
     # ── Chat ───────────────────────────────────────────────────
 
-    def _chat_insert(self, text: str, tag: str) -> None:
-        """Fügt formatierten Text in den Chat ein."""
+    def _chat_write(self, *parts) -> None:
+        """Schreibt mehrere (text, tag) Paare in einem Batch in den Chat.
+
+        Nur 1x state-toggle statt pro Aufruf -- viel flüssiger.
+        """
+        tw = self.chat_display._textbox
         self.chat_display.configure(state="normal")
-        self.chat_display._textbox.insert("end", text, tag)
+        for text, tag in parts:
+            tw.insert("end", text, tag)
         self.chat_display.configure(state="disabled")
         self.chat_display.see("end")
 
@@ -1235,67 +1245,87 @@ class MainWindow(ctk.CTk):
             return
 
         self._chatting = True
-        self.chat_send_btn.configure(state="disabled")
+        self.chat_send_btn.configure(state="disabled", text="...")
         self.chat_entry.delete(0, "end")
         context = self.editor.get("0.0", "end").strip()
 
-        # User-Nachricht sofort anzeigen
+        # User-Nachricht + KI-Header in einem Batch anzeigen
         now = datetime.now().strftime("%H:%M")
-        self._chat_insert(f"Du  ", "user_name")
-        self._chat_insert(f"{now}\n", "time")
-        self._chat_insert(f"{question}\n", "user_msg")
-        self._chat_insert("\n", "sep")
+        self._chat_write(
+            (f"Du  ", "user_name"),
+            (f"{now}\n", "time"),
+            (f"{question}\n", "user_msg"),
+            ("\n", "sep"),
+            ("KI-Assistent  ", "bot_name"),
+            (f"{now}\n", "time"),
+        )
 
-        # KI-Header schon anzeigen (Antwort wird gestreamt)
-        self._chat_insert("KI-Assistent  ", "bot_name")
-        self._chat_insert(f"{now}\n", "time")
+        # Automatisch zum Chat-Tab wechseln
+        self.result_tabs.set("💬 Chat")
 
         def run():
             try:
                 backend = self._create_backend()
                 prompt = build_chat_prompt(question, context)
                 answer = backend.check_text(prompt)
-                self.after(0, self._stream_chat_response, answer)
+                self.after(0, self._stream_response, answer)
             except Exception as e:
-                self.after(0, self._stream_chat_response, f"Fehler: {e}")
+                self.after(0, self._stream_response, f"⚠ {e}")
 
         self._pool.submit(run)
 
-    def _stream_chat_response(self, answer: str) -> None:
-        """Streamt die Antwort Wort für Wort in den Chat."""
+    def _stream_response(self, answer: str) -> None:
+        """Streamt die Antwort in Chunks -- natürlicher als Wort-für-Wort."""
         try:
             if not self.winfo_exists():
                 return
         except Exception:
             return
 
-        # Wörter aufteilen für Streaming-Effekt
-        self._stream_words = answer.split(" ")
-        self._stream_index = 0
-        self._do_stream_word()
+        # In Chunks aufteilen: 3-5 Wörter pro Chunk = natürliches Tempo
+        words = answer.split(" ")
+        self._stream_chunks = []
+        chunk_size = 4
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            # Leerzeichen am Ende außer beim letzten Chunk
+            if i + chunk_size < len(words):
+                chunk += " "
+            self._stream_chunks.append(chunk)
+        self._stream_idx = 0
+        self._do_stream()
 
-    def _do_stream_word(self) -> None:
-        """Zeigt das nächste Wort an (rekursiv via after)."""
+    def _do_stream(self) -> None:
+        """Zeigt den nächsten Chunk an -- rekursiv via after()."""
         try:
             if not self.winfo_exists():
                 return
         except Exception:
             return
 
-        if self._stream_index < len(self._stream_words):
-            word = self._stream_words[self._stream_index]
-            separator = " " if self._stream_index < len(self._stream_words) - 1 else ""
-            self._chat_insert(word + separator, "bot_msg")
-            self._stream_index += 1
-            # 30ms pro Wort = flüssig und schnell
-            self.after(30, self._do_stream_word)
+        if self._stream_idx < len(self._stream_chunks):
+            chunk = self._stream_chunks[self._stream_idx]
+
+            # Direkt ins Textwidget schreiben (schneller als _chat_write)
+            tw = self.chat_display._textbox
+            self.chat_display.configure(state="normal")
+            tw.insert("end", chunk, "bot_msg")
+            self.chat_display.configure(state="disabled")
+            self.chat_display.see("end")
+
+            self._stream_idx += 1
+            # 50ms pro Chunk (= ~12 Wörter/Sekunde, natürliches Lesetempo)
+            self.after(50, self._do_stream)
         else:
-            # Streaming fertig -- Abschluss
-            self._chat_insert("\n", "bot_msg")
-            self._chat_insert("\n", "sep")
+            # Fertig -- Abschluss und Eingabe wieder freigeben
+            self._chat_write(
+                ("\n", "bot_msg"),
+                ("\n", "sep"),
+            )
             self._chatting = False
-            self.chat_send_btn.configure(state="normal")
+            self.chat_send_btn.configure(state="normal", text="➤")
             self.chat_entry.focus()
+            self._chat_count += 1
 
     # ── Clipboard / Paste / Copy / Clear ───────────────────────
 
