@@ -78,6 +78,48 @@ def build_chat_prompt(question: str, context: str) -> str:
     return CHAT_TEMPLATE.format(context=ctx, question=question)
 
 
+# ── Planer Prompts ────────────────────────────────────────────
+
+PLAN_BRAINSTORM_TEMPLATE = """Du bist ein Projektplaner. Der Nutzer möchte folgendes Projekt/Aufgabe planen:
+
+{topic}
+
+Erstelle eine Liste von 8-12 konkreten Fragen die geklärt werden müssen, bevor man starten kann.
+Jede Frage soll eine klare Entscheidung oder Aufgabe darstellen.
+
+Antworte NUR mit einem JSON-Array von Strings, KEIN Markdown:
+["Frage 1?", "Frage 2?", "Frage 3?"]"""
+
+PLAN_GENERATE_TEMPLATE = """Du bist ein Projektplaner. Erstelle einen strukturierten Projektplan als Markdown.
+
+Projekt: {topic}
+
+Folgende Punkte wurden als relevant markiert:
+{selected}
+
+Folgende Punkte wurden als nicht relevant markiert:
+{deselected}
+
+Erstelle einen vollständigen Projektplan mit:
+- Titel und Kurzbeschreibung
+- Ziele
+- Aufgaben als Checkliste (- [ ] Format)
+- Phasen / Meilensteine
+- Technische Entscheidungen (falls relevant)
+
+Antworte NUR mit Markdown."""
+
+
+def build_brainstorm_prompt(topic: str) -> str:
+    return PLAN_BRAINSTORM_TEMPLATE.format(topic=topic)
+
+
+def build_plan_prompt(topic: str, selected: list[str], deselected: list[str]) -> str:
+    sel = "\n".join(f"- {s}" for s in selected) if selected else "- (keine)"
+    desel = "\n".join(f"- {s}" for s in deselected) if deselected else "- (keine)"
+    return PLAN_GENERATE_TEMPLATE.format(topic=topic, selected=sel, deselected=desel)
+
+
 # ── KI-Tools Prompts ──────────────────────────────────────────
 
 TONE_TEMPLATE = """Schreibe den folgenden Text um im Ton: {tone}.

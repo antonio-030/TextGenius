@@ -17,7 +17,7 @@ from app.checker import (
     check_text, build_translate_prompt, build_chat_prompt,
     build_tone_prompt, build_shorten_prompt, build_expand_prompt,
     build_rephrase_prompt, build_email_prompt, build_analyze_prompt,
-    TONE_OPTIONS,
+    build_brainstorm_prompt, build_plan_prompt, TONE_OPTIONS,
 )
 from app.clipboard import ClipboardMonitor
 from app.settings import get_setting
@@ -390,6 +390,52 @@ class MainWindow(ctk.CTk):
             command=self._on_chat_send,
         )
         self.chat_send_btn.grid(row=0, column=1)
+
+        # Tab 4: Planer -- Brainstorming mit Checkboxen
+        tab_plan = self.result_tabs.add("📋 Planer")
+        tab_plan.grid_columnconfigure(0, weight=1)
+        tab_plan.grid_rowconfigure(1, weight=1)
+
+        # Planer-Header: Thema eingeben
+        plan_top = ctk.CTkFrame(tab_plan, fg_color="transparent")
+        plan_top.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
+        plan_top.grid_columnconfigure(0, weight=1)
+
+        self.plan_topic = ctk.CTkEntry(
+            plan_top, placeholder_text="Projektidee, Script, Aufgabe beschreiben...",
+            font=ctk.CTkFont(size=13), height=36, corner_radius=18,
+        )
+        self.plan_topic.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.plan_topic.bind("<Return>", lambda e: self._on_plan_start())
+
+        self.plan_start_btn = ctk.CTkButton(
+            plan_top, text="Brainstorming", width=120, height=36,
+            corner_radius=18, command=self._on_plan_start,
+        )
+        self.plan_start_btn.grid(row=0, column=1)
+
+        # Planer-Inhalt: scrollbar für Fragen/Checkboxen
+        self.plan_scroll = ctk.CTkScrollableFrame(
+            tab_plan, corner_radius=6,
+            fg_color=("gray96", "gray12"),
+        )
+        self.plan_scroll.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self.plan_scroll.grid_columnconfigure(0, weight=1)
+        self._plan_row = 0
+        self._plan_checks = []  # (checkbox_var, text) Paare
+        self._plan_topic_text = ""
+
+        # Planer-Footer: MD generieren
+        plan_bottom = ctk.CTkFrame(tab_plan, fg_color="transparent")
+        plan_bottom.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
+        plan_bottom.grid_columnconfigure(0, weight=1)
+
+        self.plan_generate_btn = ctk.CTkButton(
+            plan_bottom, text="📄 Plan als Markdown generieren",
+            height=36, corner_radius=18, state="disabled",
+            command=self._on_plan_generate,
+        )
+        self.plan_generate_btn.grid(row=0, column=0, sticky="ew")
 
         # Summary
         self.summary_label = ctk.CTkLabel(
@@ -1326,6 +1372,191 @@ class MainWindow(ctk.CTk):
             self.chat_send_btn.configure(state="normal", text="➤")
             self.chat_entry.focus()
             self._chat_count += 1
+
+    # ── Planer ────────────────────────────────────────────────
+
+    def _on_plan_start(self) -> None:
+        """Starte Brainstorming: KI generiert Fragen als Checkboxen."""
+        topic = self.plan_topic.get().strip()
+        if not topic:
+            self._set_status("Bitte Projekt/Aufgabe beschreiben.", "warning")
+            return
+
+        self._plan_topic_text = topic
+        self.plan_start_btn.configure(state="disabled", text="Denkt nach...")
+        self.plan_generate_btn.configure(state="disabled")
+        self.result_tabs.set("📋 Planer")
+
+        # Alte Checkboxen leeren
+        for child in self.plan_scroll.winfo_children():
+            child.destroy()
+        self._plan_row = 0
+        self._plan_checks = []
+
+        # Info-Label
+        info = ctk.CTkLabel(
+            self.plan_scroll, text="KI erstellt Fragen für dein Projekt...",
+            font=ctk.CTkFont(size=12, italic=True), text_color="gray50",
+        )
+        info.grid(row=0, column=0, padx=12, pady=8, sticky="w")
+        self._plan_row = 1
+
+        def run():
+            try:
+                backend = self._create_backend()
+                prompt = build_brainstorm_prompt(topic)
+                raw = backend.check_text(prompt)
+                # JSON-Array parsen
+                import json
+                try:
+                    questions = json.loads(raw.strip())
+                except json.JSONDecodeError:
+                    import re
+                    m = re.search(r"\[.*\]", raw, re.DOTALL)
+                    questions = json.loads(m.group(0)) if m else []
+                self.after(0, self._on_plan_questions, questions)
+            except Exception as e:
+                self.after(0, self._on_plan_error, str(e))
+
+        self._pool.submit(run)
+
+    def _on_plan_questions(self, questions: list[str]) -> None:
+        """Zeigt die KI-Fragen als Checkboxen an."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        # Info-Label entfernen
+        for child in self.plan_scroll.winfo_children():
+            child.destroy()
+        self._plan_row = 0
+        self._plan_checks = []
+
+        self.plan_start_btn.configure(state="normal", text="Brainstorming")
+
+        if not questions:
+            ctk.CTkLabel(
+                self.plan_scroll, text="Keine Fragen generiert. Versuche eine andere Beschreibung.",
+                font=ctk.CTkFont(size=12), text_color="gray50",
+            ).grid(row=0, column=0, padx=12, pady=8, sticky="w")
+            return
+
+        # Header
+        ctk.CTkLabel(
+            self.plan_scroll,
+            text="Wähle die relevanten Punkte für deinen Plan:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, padx=12, pady=(8, 4), sticky="w")
+        self._plan_row = 1
+
+        # Checkboxen für jede Frage
+        for question in questions:
+            if not isinstance(question, str) or not question.strip():
+                continue
+            var = ctk.StringVar(value="on")  # Standard: angehakt
+            cb = ctk.CTkCheckBox(
+                self.plan_scroll, text=question.strip(),
+                font=ctk.CTkFont(size=12), variable=var,
+                onvalue="on", offvalue="off",
+                corner_radius=4, border_width=2,
+            )
+            cb.grid(row=self._plan_row, column=0, padx=12, pady=3, sticky="w")
+            self._plan_checks.append((var, question.strip()))
+            self._plan_row += 1
+
+        # Alles auswählen / Nichts auswählen Buttons
+        btn_row = ctk.CTkFrame(self.plan_scroll, fg_color="transparent")
+        btn_row.grid(row=self._plan_row, column=0, padx=12, pady=(8, 4), sticky="w")
+
+        ctk.CTkButton(
+            btn_row, text="Alle", width=60, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"), border_color=("gray70", "gray30"),
+            command=lambda: [v.set("on") for v, _ in self._plan_checks],
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            btn_row, text="Keine", width=60, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"), border_color=("gray70", "gray30"),
+            command=lambda: [v.set("off") for v, _ in self._plan_checks],
+        ).pack(side="left")
+
+        # Generieren-Button aktivieren
+        self.plan_generate_btn.configure(state="normal")
+        self._set_status(f"{len(self._plan_checks)} Fragen generiert. Auswählen und Plan erstellen.", "info")
+
+    def _on_plan_error(self, msg: str) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self.plan_start_btn.configure(state="normal", text="Brainstorming")
+        self._set_status(f"Planer-Fehler: {msg}", "error")
+
+    def _on_plan_generate(self) -> None:
+        """Generiert den Markdown-Plan basierend auf den Checkboxen."""
+        if not self._plan_checks:
+            return
+
+        selected = [text for var, text in self._plan_checks if var.get() == "on"]
+        deselected = [text for var, text in self._plan_checks if var.get() == "off"]
+
+        if not selected:
+            self._set_status("Bitte mindestens einen Punkt auswählen.", "warning")
+            return
+
+        self.plan_generate_btn.configure(state="disabled", text="Erstelle Plan...")
+        self._set_status("Markdown-Plan wird generiert...", "info")
+
+        def run():
+            try:
+                backend = self._create_backend()
+                prompt = build_plan_prompt(self._plan_topic_text, selected, deselected)
+                md = backend.check_text(prompt)
+                self.after(0, self._on_plan_generated, md)
+            except Exception as e:
+                self.after(0, self._on_plan_gen_error, str(e))
+
+        self._pool.submit(run)
+
+    def _on_plan_generated(self, markdown: str) -> None:
+        """Zeigt den generierten Plan im Korrektur-Tab + kopiert in Zwischenablage."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        self.plan_generate_btn.configure(state="normal", text="📄 Plan als Markdown generieren")
+
+        # Plan im Korrektur-Tab anzeigen
+        self.corrected_text.configure(state="normal")
+        self.corrected_text.delete("0.0", "end")
+        self.corrected_text.insert("0.0", markdown)
+        self.corrected_text.configure(state="disabled")
+        self.result_tabs.set("Korrektur")
+
+        # In Zwischenablage kopieren
+        try:
+            pyperclip.copy(markdown)
+            self._set_status("✔ Plan erstellt und in Zwischenablage kopiert!", "success")
+        except Exception:
+            self._set_status("✔ Plan erstellt! (Kopieren in Zwischenablage fehlgeschlagen)", "success")
+
+    def _on_plan_gen_error(self, msg: str) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self.plan_generate_btn.configure(state="normal", text="📄 Plan als Markdown generieren")
+        self._set_status(f"Plan-Erstellung fehlgeschlagen: {msg}", "error")
 
     # ── Clipboard / Paste / Copy / Clear ───────────────────────
 
