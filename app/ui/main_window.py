@@ -334,30 +334,60 @@ class MainWindow(ctk.CTk):
         self.errors_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
         # Tab 3: Chat
-        tab_chat = self.result_tabs.add("Chat")
+        tab_chat = self.result_tabs.add("💬 Chat")
         tab_chat.grid_columnconfigure(0, weight=1)
-        tab_chat.grid_rowconfigure(0, weight=1)
+        tab_chat.grid_rowconfigure(1, weight=1)
 
-        self.chat_display = ctk.CTkTextbox(
-            tab_chat, font=ctk.CTkFont(size=13),
-            corner_radius=6, state="disabled",
+        # Chat-Header mit Hinweis
+        chat_header = ctk.CTkFrame(tab_chat, fg_color="transparent")
+        chat_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        ctk.CTkLabel(
+            chat_header, text="Schreibassistent",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkLabel(
+            chat_header, text="Fragen zum Text, Umformulierungen, Erklärungen",
+            font=ctk.CTkFont(size=10), text_color="gray50",
+        ).pack(side="left", padx=(8, 0))
+
+        # Chat-Verlauf (scrollbar)
+        self.chat_scroll = ctk.CTkScrollableFrame(
+            tab_chat, corner_radius=6,
+            fg_color=("gray95", "gray14"),
         )
-        self.chat_display.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))
+        self.chat_scroll.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self.chat_scroll.grid_columnconfigure(0, weight=1)
+        self._chat_row = 0
 
-        # Chat input row
+        # Willkommensnachricht
+        self._add_chat_bubble(
+            "Hallo! Ich bin dein Schreibassistent. Stelle mir Fragen zu deinem Text – "
+            "z.B. \"Warum ist das falsch?\", \"Schreib das formeller\" oder \"Erkläre die Regel\".",
+            is_user=False, is_welcome=True,
+        )
+
+        # Typing-Indikator (unsichtbar bis gebraucht)
+        self.typing_label = ctk.CTkLabel(
+            tab_chat, text="  ⏳ KI denkt nach...",
+            font=ctk.CTkFont(size=11), text_color="gray50", anchor="w",
+        )
+
+        # Eingabezeile
         chat_input_frame = ctk.CTkFrame(tab_chat, fg_color="transparent")
-        chat_input_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        chat_input_frame.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 4))
         chat_input_frame.grid_columnconfigure(0, weight=1)
 
         self.chat_entry = ctk.CTkEntry(
-            chat_input_frame, placeholder_text="Frage stellen...",
-            font=ctk.CTkFont(size=13), height=36,
+            chat_input_frame,
+            placeholder_text="Schreib eine Nachricht...",
+            font=ctk.CTkFont(size=13), height=38, corner_radius=19,
         )
         self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.chat_entry.bind("<Return>", lambda e: self._on_chat_send())
 
         self.chat_send_btn = ctk.CTkButton(
-            chat_input_frame, text="Senden", width=80, height=36,
+            chat_input_frame, text="➤", width=38, height=38,
+            corner_radius=19, font=ctk.CTkFont(size=16),
             command=self._on_chat_send,
         )
         self.chat_send_btn.grid(row=0, column=1)
@@ -1202,11 +1232,14 @@ class MainWindow(ctk.CTk):
 
         self._chatting = True
         self.chat_send_btn.configure(state="disabled")
+        self.chat_entry.delete(0, "end")
         context = self.editor.get("0.0", "end").strip()
 
-        # Show user message in chat
-        self._chat_append(f"Du: {question}\n", bold=True)
-        self.chat_entry.delete(0, "end")
+        # User-Bubble anzeigen
+        self._add_chat_bubble(question, is_user=True)
+
+        # Typing-Indikator einblenden
+        self.typing_label.grid(row=2, column=0, sticky="w", padx=8, pady=2)
 
         def run():
             try:
@@ -1215,7 +1248,7 @@ class MainWindow(ctk.CTk):
                 answer = backend.check_text(prompt)
                 self.after(0, self._on_chat_response, answer)
             except Exception as e:
-                self.after(0, self._on_chat_response, f"Fehler: {e}")
+                self.after(0, self._on_chat_response, f"⚠ Fehler: {e}")
 
         self._pool.submit(run)
 
@@ -1226,25 +1259,81 @@ class MainWindow(ctk.CTk):
                 return
         except Exception:
             return
+
+        # Typing-Indikator ausblenden
+        self.typing_label.grid_remove()
         self.chat_send_btn.configure(state="normal")
-        self._chat_append(f"KI: {answer}\n\n")
 
-    MAX_CHAT_MESSAGES = 50
+        # KI-Bubble anzeigen
+        self._add_chat_bubble(answer, is_user=False)
 
-    def _chat_append(self, text: str, bold: bool = False) -> None:
-        self.chat_display.configure(state="normal")
-        self.chat_display.insert("end", text)
+        # Chat-Entry wieder fokussieren
+        self.chat_entry.focus()
+
+    def _add_chat_bubble(self, text: str, is_user: bool, is_welcome: bool = False) -> None:
+        """Fügt eine Chat-Bubble im Scroll-Bereich hinzu."""
+        from datetime import datetime
+
+        # Farben je nach Absender
+        if is_welcome:
+            bg = ("gray88", "gray20")
+            fg = ("gray40", "gray60")
+            anchor = "w"
+            padx = (8, 40)
+        elif is_user:
+            bg = ("#2563EB", "#1D4ED8")
+            fg = ("#FFFFFF", "#FFFFFF")
+            anchor = "e"
+            padx = (40, 8)
+        else:
+            bg = ("gray88", "gray22")
+            fg = ("gray10", "gray90")
+            anchor = "w"
+            padx = (8, 40)
+
+        # Bubble-Container
+        row_frame = ctk.CTkFrame(self.chat_scroll, fg_color="transparent")
+        row_frame.grid(row=self._chat_row, column=0, sticky="ew", pady=3)
+        row_frame.grid_columnconfigure(0, weight=1)
+        self._chat_row += 1
+
+        # Absender-Label + Zeitstempel
+        header = ctk.CTkFrame(row_frame, fg_color="transparent")
+        header.pack(fill="x", padx=padx)
+
+        sender = "Du" if is_user else ("" if is_welcome else "KI-Assistent")
+        if sender:
+            ctk.CTkLabel(
+                header, text=sender,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="gray50",
+            ).pack(side="left" if not is_user else "right")
+
+        if not is_welcome:
+            ctk.CTkLabel(
+                header, text=datetime.now().strftime("%H:%M"),
+                font=ctk.CTkFont(size=9), text_color="gray45",
+            ).pack(side="left" if not is_user else "right", padx=6)
+
+        # Bubble mit Text
+        bubble = ctk.CTkFrame(row_frame, corner_radius=12, fg_color=bg)
+        bubble.pack(anchor=anchor, padx=padx, pady=(0, 2))
+
+        ctk.CTkLabel(
+            bubble, text=text, font=ctk.CTkFont(size=12),
+            text_color=fg, wraplength=380, justify="left",
+        ).pack(padx=12, pady=8)
+
+        # Chat-Limit: älteste Bubbles entfernen
         self._chat_count += 1
+        if self._chat_count > 40:
+            children = self.chat_scroll.winfo_children()
+            if len(children) > 30:
+                for child in children[:2]:
+                    child.destroy()
 
-        # Älteste Nachrichten entfernen wenn Limit erreicht
-        if self._chat_count > self.MAX_CHAT_MESSAGES:
-            lines = self.chat_display.get("0.0", "end").split("\n")
-            # Erste 20 Zeilen entfernen
-            if len(lines) > 20:
-                self.chat_display.delete("0.0", f"{20}.0")
-
-        self.chat_display.configure(state="disabled")
-        self.chat_display.see("end")
+        # Nach unten scrollen
+        self.chat_scroll._parent_canvas.yview_moveto(1.0)
 
     # ── Clipboard / Paste / Copy / Clear ───────────────────────
 
@@ -1270,9 +1359,11 @@ class MainWindow(ctk.CTk):
         self.errors_text.configure(state="normal")
         self.errors_text.delete("0.0", "end")
         self.errors_text.configure(state="disabled")
-        self.chat_display.configure(state="normal")
-        self.chat_display.delete("0.0", "end")
-        self.chat_display.configure(state="disabled")
+        # Chat-Bubbles leeren
+        for child in self.chat_scroll.winfo_children():
+            child.destroy()
+        self._chat_row = 0
+        self._chat_count = 0
         self.summary_label.configure(text="")
         self._set_status("", "info")
 
