@@ -175,8 +175,8 @@ class MainWindow(ctk.CTk):
         self.theme_switch.grid(row=12, column=0, padx=20, pady=(0, 4), sticky="w")
 
         self.about_label = ctk.CTkLabel(
-            self.sidebar, text=f"{APP_NAME} v{APP_VERSION}  ℹ",
-            font=ctk.CTkFont(size=10), text_color="gray45", cursor="hand2",
+            self.sidebar, text="ℹ  Info",
+            font=ctk.CTkFont(size=11), text_color="gray45", cursor="hand2",
         )
         self.about_label.grid(row=13, column=0, padx=20, pady=(0, 12), sticky="w")
         self.about_label.bind("<Button-1>", lambda e: self._show_about())
@@ -385,24 +385,100 @@ class MainWindow(ctk.CTk):
         self.focus_force()
 
     def _show_about(self) -> None:
+        """Info-Seite: Über uns, Copyright, Links, Tastenkürzel."""
         about = ctk.CTkToplevel(self)
         about.title(f"Über {APP_NAME}")
-        about.geometry("340x220")
+        about.geometry("420x480")
         about.resizable(False, False)
         about.transient(self)
         about.grab_set()
 
+        # App-Name + Version
         ctk.CTkLabel(about, text=APP_NAME,
-                     font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(20, 4))
+                     font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(24, 2))
         ctk.CTkLabel(about, text=f"Version {APP_VERSION}",
                      font=ctk.CTkFont(size=13), text_color="gray50").pack()
-        ctk.CTkLabel(about, text="KI-gestützter Rechtschreib-\nund Grammatikprüfer für Windows",
-                     font=ctk.CTkFont(size=12), text_color="gray60",
-                     justify="center").pack(pady=(8, 0))
-        ctk.CTkLabel(about, text="Ctrl+Enter = Prüfen  |  Ctrl+Shift+P = Clipboard",
-                     font=ctk.CTkFont(size=10), text_color="gray45").pack(pady=(4, 0))
+        ctk.CTkLabel(about, text="KI-gestützter Rechtschreib- und Grammatikprüfer",
+                     font=ctk.CTkFont(size=12), text_color="gray60").pack(pady=(4, 0))
+
+        # Trennlinie
+        ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
+            fill="x", padx=30, pady=16)
+
+        # Über uns / Copyright
+        info_frame = ctk.CTkFrame(about, fg_color="transparent")
+        info_frame.pack(fill="x", padx=30)
+
+        ctk.CTkLabel(info_frame, text="Herausgeber",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="gray50").pack(anchor="w")
+        ctk.CTkLabel(info_frame, text="techlogia – Technologie & Automation",
+                     font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(2, 0))
+
+        # Link zu techlogia.de
+        link = ctk.CTkLabel(info_frame, text="www.techlogia.de",
+                            font=ctk.CTkFont(size=13), text_color="#2563EB",
+                            cursor="hand2")
+        link.pack(anchor="w", pady=(2, 0))
+        link.bind("<Button-1>", lambda e: self._open_url("https://techlogia.de"))
+
+        ctk.CTkLabel(info_frame, text=f"© 2026 techlogia. Alle Rechte vorbehalten.",
+                     font=ctk.CTkFont(size=11), text_color="gray50").pack(anchor="w", pady=(8, 0))
+
+        # Trennlinie
+        ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
+            fill="x", padx=30, pady=16)
+
+        # Tastenkürzel
+        shortcuts_frame = ctk.CTkFrame(about, fg_color="transparent")
+        shortcuts_frame.pack(fill="x", padx=30)
+
+        ctk.CTkLabel(shortcuts_frame, text="Tastenkürzel",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="gray50").pack(anchor="w")
+
+        for shortcut, action in [
+            ("Ctrl + Enter", "Text prüfen"),
+            ("Ctrl + Shift + P", "Zwischenablage prüfen (global)"),
+            ("Ctrl + V", "Text einfügen"),
+        ]:
+            row = ctk.CTkFrame(shortcuts_frame, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkLabel(row, text=shortcut, font=ctk.CTkFont(size=11, weight="bold"),
+                         width=140, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=action, font=ctk.CTkFont(size=11),
+                         text_color="gray60", anchor="w").pack(side="left")
+
+        # Trennlinie
+        ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
+            fill="x", padx=30, pady=16)
+
+        # Links
+        links_frame = ctk.CTkFrame(about, fg_color="transparent")
+        links_frame.pack(fill="x", padx=30)
+
+        gh_link = ctk.CTkLabel(links_frame, text="GitHub: antonio-030/TextGenius",
+                               font=ctk.CTkFont(size=11), text_color="#2563EB",
+                               cursor="hand2")
+        gh_link.pack(anchor="w")
+        gh_link.bind("<Button-1>", lambda e: self._open_url(
+            "https://github.com/antonio-030/TextGenius"))
+
+        issue_link = ctk.CTkLabel(links_frame, text="Fehler melden / Feature anfragen",
+                                  font=ctk.CTkFont(size=11), text_color="#2563EB",
+                                  cursor="hand2")
+        issue_link.pack(anchor="w", pady=(2, 0))
+        issue_link.bind("<Button-1>", lambda e: self._open_url(
+            "https://github.com/antonio-030/TextGenius/issues"))
+
+        # Schließen
         ctk.CTkButton(about, text="Schließen", width=100,
-                      command=about.destroy).pack(pady=(12, 0))
+                      command=about.destroy).pack(pady=(16, 20))
+
+    def _open_url(self, url: str) -> None:
+        """Öffnet eine URL im Standard-Browser."""
+        import webbrowser
+        webbrowser.open(url)
 
     def _on_close(self) -> None:
         self._clipboard.stop()
