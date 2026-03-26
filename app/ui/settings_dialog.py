@@ -248,7 +248,7 @@ class SettingsDialog(ctk.CTkToplevel):
             row=0, column=0, padx=12, pady=(16, 8), sticky="w",
         )
         self.language_menu = ctk.CTkOptionMenu(
-            tab, values=["de", "en", "de+en"], width=120,
+            tab, values=["auto", "de", "en", "de+en"], width=120,
         )
         self.language_menu.grid(row=0, column=1, padx=12, pady=(16, 8), sticky="w")
 

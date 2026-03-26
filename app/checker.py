@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Supported languages for prompts
 LANGUAGES = {
+    "auto": "Erkenne die Sprache automatisch",
     "de": "Deutsch",
     "en": "Englisch",
     "de+en": "Deutsch und Englisch (gemischt)",

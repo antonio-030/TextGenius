@@ -20,7 +20,9 @@ from app.checker import (
     build_brainstorm_prompt, build_plan_prompt, TONE_OPTIONS,
 )
 from app.clipboard import ClipboardMonitor
+from app.history import save_draft, load_draft, add_to_history, get_history
 from app.settings import get_setting
+from app.templates import TEMPLATES
 from app.ui.settings_dialog import SettingsDialog
 from version import APP_NAME, APP_VERSION
 
@@ -78,8 +80,11 @@ class MainWindow(ctk.CTk):
         self._build_sidebar()
         self._build_content()
 
-        # Keyboard shortcut: Ctrl+Enter = check text
+        # Tastenkürzel
         self.bind("<Control-Return>", lambda e: self._on_check())
+        self.bind("<Control-t>", lambda e: self._on_translate())
+        self.bind("<Control-k>", lambda e: self._on_tool_quick("shorten"))
+        self.bind("<Control-e>", lambda e: self._on_tool_quick("expand"))
 
         # Auto-collapse sidebar when window gets narrow
         self._last_width = self.winfo_width()
@@ -281,17 +286,45 @@ class MainWindow(ctk.CTk):
         content.grid_rowconfigure(1, weight=1)  # editor
         content.grid_rowconfigure(3, weight=1)  # result tabs
 
-        # Editor header with shortcut hint
+        # Editor header: Titel links, Live-Stats rechts
         header = ctk.CTkFrame(content, fg_color="transparent")
-        header.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
+        header.grid(row=0, column=0, padx=20, pady=(10, 2), sticky="ew")
+
+        # Links: Titel + Vorlagen + Verlauf Buttons
+        left = ctk.CTkFrame(header, fg_color="transparent")
+        left.pack(side="left")
         ctk.CTkLabel(
-            header, text="Text eingeben",
-            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+            left, text="Text eingeben",
+            font=ctk.CTkFont(size=14, weight="bold"), anchor="w",
         ).pack(side="left")
-        ctk.CTkLabel(
-            header, text="Ctrl+Enter = Prüfen  |  Ctrl+Shift+P = Clipboard",
+        ctk.CTkButton(
+            left, text="📋", width=28, height=24, corner_radius=4,
+            font=ctk.CTkFont(size=13),
+            fg_color="transparent", hover_color=("gray85", "gray25"),
+            text_color=("gray40", "gray60"),
+            command=self._show_templates,
+        ).pack(side="left", padx=(6, 0))
+        ctk.CTkButton(
+            left, text="🕐", width=28, height=24, corner_radius=4,
+            font=ctk.CTkFont(size=13),
+            fg_color="transparent", hover_color=("gray85", "gray25"),
+            text_color=("gray40", "gray60"),
+            command=self._show_history,
+        ).pack(side="left", padx=2)
+        ctk.CTkButton(
+            left, text="💾", width=28, height=24, corner_radius=4,
+            font=ctk.CTkFont(size=13),
+            fg_color="transparent", hover_color=("gray85", "gray25"),
+            text_color=("gray40", "gray60"),
+            command=self._export_text,
+        ).pack(side="left", padx=2)
+
+        # Rechts: Live-Statistik
+        self.stats_label = ctk.CTkLabel(
+            header, text="0 Wörter  |  0 Zeichen  |  ~0 Min.",
             font=ctk.CTkFont(size=10), text_color="gray50", anchor="e",
-        ).pack(side="right")
+        )
+        self.stats_label.pack(side="right")
 
         # Editor
         self.editor = ctk.CTkTextbox(
@@ -299,6 +332,15 @@ class MainWindow(ctk.CTk):
             corner_radius=8, border_width=1, border_color=("gray75", "gray25"),
         )
         self.editor.grid(row=1, column=0, padx=20, pady=(0, 6), sticky="nsew")
+
+        # Live-Statistik + Auto-Speichern per KeyRelease
+        self.editor.bind("<KeyRelease>", self._on_editor_change)
+
+        # Gespeicherten Entwurf laden
+        draft = load_draft()
+        if draft:
+            self.editor.insert("0.0", draft)
+            self._update_stats()
 
         # Result header
         ctk.CTkLabel(
@@ -556,11 +598,187 @@ class MainWindow(ctk.CTk):
         webbrowser.open(url)
 
     def _on_close(self) -> None:
+        # Entwurf speichern beim Schließen
+        try:
+            text = self.editor.get("0.0", "end").strip()
+            save_draft(text)
+        except Exception:
+            pass
         self._clipboard.stop()
         self._pool.shutdown(wait=False)
         if self._sidebar_poll_id is not None:
             self.after_cancel(self._sidebar_poll_id)
         self.destroy()
+
+    # ── Live-Statistik + Auto-Speichern ───────────────────────
+
+    _save_counter = 0  # Nur alle 10 Tastenschläge speichern
+
+    def _on_editor_change(self, event=None) -> None:
+        """Wird bei jedem Tastendruck im Editor aufgerufen."""
+        self._update_stats()
+        # Auto-Speichern alle 10 Tastenschläge (nicht bei jedem)
+        self._save_counter += 1
+        if self._save_counter >= 10:
+            self._save_counter = 0
+            text = self.editor.get("0.0", "end").strip()
+            save_draft(text)
+
+    def _update_stats(self) -> None:
+        """Aktualisiert die Live-Statistik im Header."""
+        text = self.editor.get("0.0", "end").strip()
+        words = len(text.split()) if text else 0
+        chars = len(text)
+        read_min = max(1, round(words / 200)) if words > 0 else 0
+        self.stats_label.configure(
+            text=f"{words} Wörter  |  {chars} Zeichen  |  ~{read_min} Min."
+        )
+
+    # ── Vorlagen ──────────────────────────────────────────────
+
+    def _show_templates(self) -> None:
+        """Zeigt Vorlagen-Auswahl als Dialog."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Vorlagen")
+        dialog.geometry("420x400")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog, text="📋 Vorlage wählen",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        scroll = ctk.CTkScrollableFrame(dialog, corner_radius=6)
+        scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        for i, (name, icon, desc, text) in enumerate(TEMPLATES):
+            def make_cb(t=text):
+                def cb():
+                    dialog.destroy()
+                    self.editor.delete("0.0", "end")
+                    self.editor.insert("0.0", t)
+                    self._update_stats()
+                return cb
+
+            btn = ctk.CTkButton(
+                scroll, text=f"{icon}  {name}", anchor="w",
+                font=ctk.CTkFont(size=13), height=42, corner_radius=8,
+                fg_color=("gray92", "gray18"),
+                hover_color=("gray85", "gray25"),
+                text_color=("gray10", "gray90"),
+                command=make_cb(),
+            )
+            btn.grid(row=i, column=0, sticky="ew", padx=4, pady=2)
+
+    # ── Verlauf ───────────────────────────────────────────────
+
+    def _show_history(self) -> None:
+        """Zeigt die letzten geprüften Texte als Dialog."""
+        entries = get_history()
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Verlauf")
+        dialog.geometry("450x380")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog, text="🕐 Letzte Texte",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        if not entries:
+            ctk.CTkLabel(
+                dialog, text="Noch keine Texte geprüft.",
+                font=ctk.CTkFont(size=12), text_color="gray50",
+            ).pack(padx=16, pady=20)
+            return
+
+        scroll = ctk.CTkScrollableFrame(dialog, corner_radius=6)
+        scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        for i, entry in enumerate(entries):
+            preview = entry.get("text", "")[:80].replace("\n", " ")
+            time_str = entry.get("time", "")
+            words = entry.get("words", 0)
+            errors = entry.get("errors", 0)
+            info = f"{time_str}  •  {words} Wörter  •  {errors} Fehler"
+
+            card = ctk.CTkFrame(scroll, corner_radius=8, border_width=1,
+                                border_color=("gray80", "gray25"))
+            card.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
+            card.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                card, text=preview + "...", font=ctk.CTkFont(size=12),
+                anchor="w", wraplength=320,
+            ).grid(row=0, column=0, padx=10, pady=(8, 0), sticky="w")
+            ctk.CTkLabel(
+                card, text=info, font=ctk.CTkFont(size=10),
+                text_color="gray50", anchor="w",
+            ).grid(row=1, column=0, padx=10, pady=(0, 8), sticky="w")
+
+            def make_cb(t=entry.get("text", "")):
+                def cb():
+                    dialog.destroy()
+                    self.editor.delete("0.0", "end")
+                    self.editor.insert("0.0", t)
+                    self._update_stats()
+                return cb
+
+            ctk.CTkButton(
+                card, text="Laden", width=60, height=28, corner_radius=6,
+                font=ctk.CTkFont(size=11), command=make_cb(),
+            ).grid(row=0, column=1, rowspan=2, padx=8, pady=8)
+
+    # ── Export ────────────────────────────────────────────────
+
+    def _export_text(self) -> None:
+        """Exportiert den Text als Datei (.txt oder .md)."""
+        from tkinter import filedialog
+
+        # Was exportieren: korrigierten Text wenn vorhanden, sonst Editor
+        self.corrected_text.configure(state="normal")
+        corrected = self.corrected_text.get("0.0", "end").strip()
+        self.corrected_text.configure(state="disabled")
+        text = corrected if corrected else self.editor.get("0.0", "end").strip()
+
+        if not text:
+            self._set_status("Kein Text zum Exportieren.", "warning")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Text exportieren",
+            defaultextension=".txt",
+            filetypes=[
+                ("Textdatei", "*.txt"),
+                ("Markdown", "*.md"),
+                ("Alle Dateien", "*.*"),
+            ],
+            initialfile="TextGenius-Export",
+        )
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self._set_status(f"✔ Exportiert: {os.path.basename(path)}", "success")
+            except OSError as e:
+                self._set_status(f"Export fehlgeschlagen: {e}", "error")
+
+    # ── Schnelltasten für Tools ───────────────────────────────
+
+    def _on_tool_quick(self, tool_key: str) -> None:
+        """Führt ein KI-Tool direkt aus (für Tastenkürzel)."""
+        text = self.editor.get("0.0", "end").strip()
+        if not text or self._checking:
+            return
+        if tool_key == "shorten":
+            self._run_tool("Kürze...", build_shorten_prompt(text))
+        elif tool_key == "expand":
+            self._run_tool("Erweitere...", build_expand_prompt(text))
 
     def _open_settings(self) -> None:
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
@@ -701,6 +919,10 @@ class MainWindow(ctk.CTk):
 
         self._highlight_errors(errors)
         self.summary_label.configure(text=result.get("summary", ""))
+
+        # Zum Verlauf hinzufügen
+        original = self.editor.get("0.0", "end").strip()
+        add_to_history(original, result.get("corrected_text", ""), len(errors))
 
         n = len(errors)
         if n == 0:
