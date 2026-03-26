@@ -1711,7 +1711,7 @@ class MainWindow(ctk.CTk):
         # Info-Label
         info = ctk.CTkLabel(
             self.plan_scroll, text="KI erstellt Fragen für dein Projekt...",
-            font=ctk.CTkFont(size=12, italic=True), text_color="gray50",
+            font=ctk.CTkFont(size=12, slant="italic"), text_color="gray50",
         )
         info.grid(row=0, column=0, padx=12, pady=8, sticky="w")
         self._plan_row = 1
