@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/textgenius/
+*.spec.bak
+.env
+*.egg-info/
+.vscode/
+.idea/
+*.log
+node_modules/
