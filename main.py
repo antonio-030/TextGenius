@@ -2,9 +2,23 @@
 
 import sys
 
-# SICHERHEIT: DLL-Härtung VOR allen anderen Imports
-from app.security import harden_dll_search_order, verify_dll_integrity
-harden_dll_search_order()
+# SICHERHEIT: DLL-Härtung (optional)
+try:
+    from app.security import harden_dll_search_order, verify_dll_integrity
+    harden_dll_search_order()
+except Exception:
+    pass
+
+# darkdetect kann auf manchen Systemen hängen -- deaktivieren vor CTk Import
+import sys
+import types
+# Dummy darkdetect damit CTk nicht hängt
+dd = types.ModuleType("darkdetect")
+dd.theme = lambda: "Light"
+dd.listener = lambda callback: None
+dd.isDark = lambda: False
+dd.isLight = lambda: True
+sys.modules["darkdetect"] = dd
 
 import customtkinter as ctk
 
