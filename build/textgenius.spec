@@ -23,8 +23,8 @@ a = Analysis(
     ],
     hiddenimports=[
         'pynput.keyboard._win32',
-        'pynput.mouse._win32',
         'customtkinter',
+        'win32crypt',
     ],
     hookspath=[],
     hooksconfig={},

@@ -15,7 +15,11 @@ class OllamaBackend(BaseBackend):
     """Backend using a local Ollama instance."""
 
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3"):
-        self.base_url = base_url.rstrip("/")
+        # URL-Validierung: nur http/https erlaubt
+        url = base_url.rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"Ungültige Ollama URL: {url} (nur http/https erlaubt)")
+        self.base_url = url
         self.model = model
 
     def check_text(self, prompt: str) -> str:

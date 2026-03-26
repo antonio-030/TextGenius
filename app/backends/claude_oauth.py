@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 # Anthropic API
 API_URL = "https://api.anthropic.com/v1/messages"
 
+# Certificate Pinning: eigenes CA-Bundle für API-Verbindungen
+_CERTS_PATH = os.path.join(os.path.dirname(__file__), "pinned_certs.pem")
+_VERIFY = _CERTS_PATH if os.path.exists(_CERTS_PATH) else True
+
 # Required headers for OAuth token auth (from pi-ai source)
 OAUTH_HEADERS = {
     "anthropic-version": "2023-06-01",
@@ -98,7 +102,7 @@ def refresh_token(oauth: dict) -> dict:
             "grant_type": "refresh_token",
             "client_id": CLIENT_ID,
             "refresh_token": refresh,
-        }, timeout=15)
+        }, timeout=15, verify=_VERIFY)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -169,7 +173,8 @@ class ClaudeOAuthBackend(BaseBackend):
             )
             t0 = time.time()
 
-            response = requests.post(API_URL, json=payload, headers=headers, timeout=120)
+            response = requests.post(API_URL, json=payload, headers=headers,
+                                     timeout=120, verify=_VERIFY)
             response.raise_for_status()
             data = response.json()
 

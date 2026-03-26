@@ -42,14 +42,26 @@ class ClipboardMonitor:
             self._listener = None
             logger.info("Hotkey-Listener gestoppt")
 
+    # Maximale Clipboard-Größe: 100.000 Zeichen (~50 Seiten Text)
+    MAX_CLIPBOARD_SIZE = 100_000
+
     def _on_hotkey(self):
         """Called from listener thread when Ctrl+Shift+P is pressed."""
         try:
             text = pyperclip.paste()
-            if text and text.strip():
-                logger.info("Hotkey: Clipboard-Text erkannt (%d zeichen)", len(text))
-                self._on_check(text)
-            else:
+            if not text or not text.strip():
                 logger.info("Hotkey: Zwischenablage leer")
+                return
+
+            # Größenlimit prüfen
+            if len(text) > self.MAX_CLIPBOARD_SIZE:
+                logger.warning(
+                    "Hotkey: Clipboard zu groß (%d zeichen, max %d)",
+                    len(text), self.MAX_CLIPBOARD_SIZE,
+                )
+                text = text[:self.MAX_CLIPBOARD_SIZE]
+
+            logger.info("Hotkey: Clipboard-Text erkannt (%d zeichen)", len(text))
+            self._on_check(text)
         except Exception as e:
             logger.error("Hotkey: Clipboard-Fehler: %s", e)

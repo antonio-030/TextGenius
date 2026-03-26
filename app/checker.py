@@ -44,10 +44,125 @@ Hier ist der zu prüfende Text:
 {text}"""
 
 
+TRANSLATE_TEMPLATE = """Übersetze den folgenden Text nach {target}.
+Erkenne die Ausgangssprache automatisch.
+Gib NUR die Übersetzung zurück, keine Erklärungen.
+
+{text}"""
+
+CHAT_TEMPLATE = """Du bist ein hilfreicher Schreibassistent.
+Der Nutzer arbeitet an folgendem Text:
+
+---
+{context}
+---
+
+Beantworte die Frage des Nutzers kurz und hilfreich.
+Nutzer: {question}"""
+
+
 def build_prompt(text: str, language: str = "de") -> str:
     """Build the full prompt for the KI backend."""
     lang_name = LANGUAGES.get(language, "Deutsch")
     return PROMPT_TEMPLATE.format(language=lang_name, text=text)
+
+
+def build_translate_prompt(text: str, target_language: str = "Englisch") -> str:
+    """Build a translation prompt with the target language."""
+    return TRANSLATE_TEMPLATE.format(target=target_language, text=text)
+
+
+def build_chat_prompt(question: str, context: str) -> str:
+    """Build a chat prompt with the current editor text as context."""
+    ctx = context.strip() if context.strip() else "(kein Text eingegeben)"
+    return CHAT_TEMPLATE.format(context=ctx, question=question)
+
+
+# ── KI-Tools Prompts ──────────────────────────────────────────
+
+TONE_TEMPLATE = """Schreibe den folgenden Text um im Ton: {tone}.
+Behalte den Inhalt und die Bedeutung bei, ändere nur den Stil/Ton.
+Gib NUR den umgeschriebenen Text zurück.
+
+{text}"""
+
+SHORTEN_TEMPLATE = """Kürze den folgenden Text auf die Kernaussagen.
+Behalte die wichtigsten Informationen, entferne Füllwörter und Wiederholungen.
+Gib NUR den gekürzten Text zurück.
+
+{text}"""
+
+EXPAND_TEMPLATE = """Erweitere den folgenden Text zu einem ausführlichen Fließtext.
+Füge Details, Erklärungen und Übergänge hinzu.
+Behalte den Inhalt und Ton bei.
+Gib NUR den erweiterten Text zurück.
+
+{text}"""
+
+REPHRASE_TEMPLATE = """Formuliere den folgenden Text komplett um.
+Gleicher Inhalt, aber andere Worte und Satzstrukturen.
+Gib NUR den umformulierten Text zurück.
+
+{text}"""
+
+EMAIL_TEMPLATE = """Schreibe eine professionelle Antwort-Email basierend auf dem folgenden Kontext.
+Ton: höflich, professionell, auf den Punkt.
+Gib NUR die Email zurück (mit Anrede und Grußformel).
+
+Kontext:
+{text}"""
+
+ANALYZE_TEMPLATE = """Analysiere den folgenden Text und gib eine strukturierte Bewertung als JSON zurück.
+Antworte NUR mit JSON, kein Markdown.
+
+{{
+  "wortanzahl": <Anzahl Wörter>,
+  "satzanzahl": <Anzahl Sätze>,
+  "durchschnittliche_satzlaenge": <Wörter pro Satz>,
+  "lesezeit_minuten": <geschätzte Lesezeit>,
+  "lesbarkeit": "leicht|mittel|schwer",
+  "tonalitaet": "<z.B. formell, neutral, locker, emotional>",
+  "verbesserungsvorschlaege": ["<Vorschlag 1>", "<Vorschlag 2>"]
+}}
+
+Text:
+{text}"""
+
+
+# Verfügbare Ton-Optionen
+TONE_OPTIONS = [
+    "Formell / Geschäftlich",
+    "Locker / Umgangssprachlich",
+    "Professionell / Sachlich",
+    "Freundlich / Warm",
+    "Akademisch / Wissenschaftlich",
+    "Überzeugend / Werblich",
+    "Diplomatisch / Vorsichtig",
+]
+
+
+def build_tone_prompt(text: str, tone: str) -> str:
+    return TONE_TEMPLATE.format(tone=tone, text=text)
+
+
+def build_shorten_prompt(text: str) -> str:
+    return SHORTEN_TEMPLATE.format(text=text)
+
+
+def build_expand_prompt(text: str) -> str:
+    return EXPAND_TEMPLATE.format(text=text)
+
+
+def build_rephrase_prompt(text: str) -> str:
+    return REPHRASE_TEMPLATE.format(text=text)
+
+
+def build_email_prompt(text: str) -> str:
+    return EMAIL_TEMPLATE.format(text=text)
+
+
+def build_analyze_prompt(text: str) -> str:
+    return ANALYZE_TEMPLATE.format(text=text)
 
 
 def parse_response(raw: str) -> dict[str, Any]:

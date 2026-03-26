@@ -1,8 +1,8 @@
 requests>=2.31.0        # HTTP for Ollama & APIs
 pyperclip>=1.8.2        # Clipboard read/write
 anthropic>=0.25.0       # Claude API
-openai>=1.12.0          # OpenAI API
 pynput>=1.7.6           # Hotkeys (Ctrl+Shift+P) - no admin required
 Pillow>=10.0.0          # PNG icon in UI elements
 customtkinter>=5.2.0    # Modern Tkinter widgets with DPI support
+pywin32>=306             # Windows DPAPI for encrypted key storage
 pyinstaller>=6.0.0      # Build .exe (dev only)

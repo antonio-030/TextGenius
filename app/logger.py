@@ -9,12 +9,19 @@ from pathlib import Path
 
 # Patterns that should be anonymized in log output
 _SENSITIVE_PATTERNS = [
-    # API keys: sk-..., sk-ant-..., key-...
-    (re.compile(r"(sk-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+"), r"\1****"),
+    # OAuth tokens: sk-ant-oat... (längste Patterns zuerst)
+    (re.compile(r"(sk-ant-oat[a-zA-Z0-9_-]{2})[a-zA-Z0-9_-]+"), r"\1****"),
+    # API keys: sk-ant-api..., sk-ant-...
     (re.compile(r"(sk-ant-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+"), r"\1****"),
-    (re.compile(r"(key-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+"), r"\1****"),
-    # Bearer tokens in headers
-    (re.compile(r"(Bearer\s+[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+"), r"\1****"),
+    # Allgemeine API keys: sk-...
+    (re.compile(r"(sk-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]{4,}"), r"\1****"),
+    # Key-Prefixes
+    (re.compile(r"(key-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]{4,}"), r"\1****"),
+    # Bearer tokens (min 8 Zeichen nach Bearer)
+    (re.compile(r"(Bearer\s+[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]{4,}"), r"\1****"),
+    # DPAPI/B64 verschlüsselte Werte in Settings
+    (re.compile(r"(DPAPI:[a-zA-Z0-9+/=]{8})[a-zA-Z0-9+/=]+"), r"\1****"),
+    (re.compile(r"(B64:[a-zA-Z0-9+/=]{8})[a-zA-Z0-9+/=]+"), r"\1****"),
 ]
 
 

@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import customtkinter as ctk
@@ -13,13 +13,31 @@ from app.backends.base import BaseBackend
 from app.backends.ollama import OllamaBackend
 from app.backends.claude import ClaudeBackend
 from app.backends.claude_oauth import ClaudeOAuthBackend
-from app.checker import check_text
+from app.checker import (
+    check_text, build_translate_prompt, build_chat_prompt,
+    build_tone_prompt, build_shorten_prompt, build_expand_prompt,
+    build_rephrase_prompt, build_email_prompt, build_analyze_prompt,
+    TONE_OPTIONS,
+)
 from app.clipboard import ClipboardMonitor
 from app.settings import get_setting
 from app.ui.settings_dialog import SettingsDialog
 from version import APP_NAME, APP_VERSION
 
 logger = logging.getLogger(__name__)
+
+# Sidebar icon/text pairs for collapsed/expanded state
+SIDEBAR_BUTTONS = {
+    "check":     ("✔", "✔  Text prüfen"),
+    "paste":     ("⌘", "⌘  Einfügen"),
+    "copy":      ("◐", "◐  Kopieren"),
+    "clear":     ("✕", "✕  Leeren"),
+    "translate": ("🌐", "🌐  Übersetzen"),
+    "tools":     ("🔧", "🔧  KI-Werkzeuge"),
+    "settings":  ("⚙", "⚙  Einstellungen"),
+}
+SIDEBAR_EXPANDED = 200
+SIDEBAR_COLLAPSED = 56
 
 
 class MainWindow(ctk.CTk):
@@ -29,338 +47,464 @@ class MainWindow(ctk.CTk):
         super().__init__()
         self.settings = settings
         self._checking = False
+        self._chatting = False
+        self._chat_count = 0          # Chat-Nachrichten Zähler
         self._settings_dialog = None
+        self._sidebar_open = True
+        self._sidebar_poll_id = None  # für after_cancel
+        self._pool = ThreadPoolExecutor(max_workers=3)  # Zentraler Thread-Pool
         self._clipboard = ClipboardMonitor(self._on_hotkey_check)
 
         # Window setup
         self.title(f"{APP_NAME} v{APP_VERSION}")
-        self.geometry("1000x680")
-        self.minsize(800, 550)
+        self.geometry("1050x700")
+        self.minsize(620, 500)
 
-        # Set window icon -- resolve path relative to exe/script location
+        # Window icon
         try:
-            if getattr(sys, 'frozen', False):
+            if getattr(sys, "frozen", False):
                 base_path = sys._MEIPASS
             else:
                 base_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            icon_path = os.path.join(base_path, "assets", "icon.ico")
-            self.iconbitmap(icon_path)
+            self.iconbitmap(os.path.join(base_path, "assets", "icon.ico"))
         except Exception:
-            logger.debug("Icon file not found, using default")
+            logger.debug("Icon not found")
 
-        # Grid layout: sidebar (col 0) + content (col 1)
-        self.grid_columnconfigure(0, weight=0)  # sidebar fixed
-        self.grid_columnconfigure(1, weight=1)  # content expands
-        self.grid_rowconfigure(0, weight=1)      # full height
+        # Grid: sidebar (col 0) + content (col 1)
+        self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_EXPANDED)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
         self._build_sidebar()
         self._build_content()
 
-        # Start hotkey listener + clean shutdown
+        # Keyboard shortcut: Ctrl+Enter = check text
+        self.bind("<Control-Return>", lambda e: self._on_check())
+
+        # Auto-collapse sidebar when window gets narrow
+        self._last_width = self.winfo_width()
+        self._check_sidebar_size()
+
+        # Hotkey listener + clean shutdown
         self._clipboard.start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    # ── Sidebar ────────────────────────────────────────────────
+
     def _build_sidebar(self) -> None:
-        """Build the left sidebar with navigation and info."""
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
+        """Build the collapsible left sidebar."""
+        self.sidebar = ctk.CTkFrame(self, width=SIDEBAR_EXPANDED, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(10, weight=1)  # push bottom items down
+        self.sidebar.grid_rowconfigure(10, weight=1)  # spacer before bottom
         self.sidebar.grid_propagate(False)
 
-        # App title
-        ctk.CTkLabel(
+        # Toggle button (row 0)
+        self.toggle_btn = ctk.CTkButton(
+            self.sidebar, text="☰", width=30, height=30,
+            font=ctk.CTkFont(size=16), corner_radius=6,
+            fg_color="transparent", hover_color=("gray85", "gray25"),
+            text_color=("gray30", "gray70"),
+            command=self._toggle_sidebar,
+        )
+        self.toggle_btn.grid(row=0, column=0, padx=12, pady=(12, 0), sticky="w")
+
+        # App title (row 1)
+        self.title_label = ctk.CTkLabel(
             self.sidebar, text=APP_NAME,
-            font=ctk.CTkFont(size=22, weight="bold"),
-        ).grid(row=0, column=0, padx=20, pady=(24, 4), sticky="w")
-
-        ctk.CTkLabel(
-            self.sidebar, text=f"v{APP_VERSION}",
-            font=ctk.CTkFont(size=12),
-            text_color="gray60",
-        ).grid(row=1, column=0, padx=20, pady=(0, 20), sticky="w")
-
-        # Action buttons in sidebar
-        self.check_button = ctk.CTkButton(
-            self.sidebar, text="\u2714  Text prüfen",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            height=40, corner_radius=8,
-            command=self._on_check,
+            font=ctk.CTkFont(size=20, weight="bold"),
         )
-        self.check_button.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="ew")
+        self.title_label.grid(row=1, column=0, padx=20, pady=(4, 16), sticky="w")
 
-        self.paste_button = ctk.CTkButton(
-            self.sidebar, text="\u2398  Einfügen",
-            font=ctk.CTkFont(size=13),
-            height=36, corner_radius=8,
-            fg_color="transparent", border_width=1,
-            text_color=("gray10", "gray90"),
-            border_color=("gray70", "gray30"),
-            hover_color=("gray85", "gray25"),
-            command=self._on_paste,
+        # Action buttons (rows 2-6)
+        self.check_button = self._sidebar_btn(
+            "check", row=2, primary=True, command=self._on_check
         )
-        self.paste_button.grid(row=3, column=0, padx=16, pady=(0, 6), sticky="ew")
-
-        self.copy_button = ctk.CTkButton(
-            self.sidebar, text="\u2750  Kopieren",
-            font=ctk.CTkFont(size=13),
-            height=36, corner_radius=8,
-            fg_color="transparent", border_width=1,
-            text_color=("gray10", "gray90"),
-            border_color=("gray70", "gray30"),
-            hover_color=("gray85", "gray25"),
-            command=self._on_copy,
+        self.paste_button = self._sidebar_btn(
+            "paste", row=3, command=self._on_paste
         )
-        self.copy_button.grid(row=4, column=0, padx=16, pady=(0, 6), sticky="ew")
-
-        self.clear_button = ctk.CTkButton(
-            self.sidebar, text="\u2715  Leeren",
-            font=ctk.CTkFont(size=13),
-            height=36, corner_radius=8,
-            fg_color="transparent",
-            text_color=("gray40", "gray60"),
-            hover_color=("gray85", "gray25"),
-            command=self._on_clear,
+        self.copy_button = self._sidebar_btn(
+            "copy", row=4, command=self._on_copy
         )
-        self.clear_button.grid(row=5, column=0, padx=16, pady=(0, 6), sticky="ew")
+        self.clear_button = self._sidebar_btn(
+            "clear", row=5, command=self._on_clear, ghost=True
+        )
+        self.translate_button = self._sidebar_btn(
+            "translate", row=6, command=self._on_translate
+        )
 
-        # Status label (in sidebar, above bottom info)
+        # KI-Werkzeuge Button (row 7)
+        self.tools_button = self._sidebar_btn(
+            "tools", row=7, command=self._open_tools_panel
+        )
+
+        # Status (row 8)
         self.status_label = ctk.CTkLabel(
-            self.sidebar, text="",
-            font=ctk.CTkFont(size=12),
-            text_color="gray60",
-            wraplength=170,
+            self.sidebar, text="", font=ctk.CTkFont(size=11),
+            text_color="gray60", wraplength=160,
         )
-        self.status_label.grid(row=6, column=0, padx=16, pady=(12, 0), sticky="w")
+        self.status_label.grid(row=8, column=0, padx=16, pady=(8, 0), sticky="w")
 
-        # Bottom: settings button + theme switch
-        self.settings_button = ctk.CTkButton(
-            self.sidebar, text="⚙  Einstellungen",
-            font=ctk.CTkFont(size=13),
-            height=36, corner_radius=8,
-            fg_color="transparent", border_width=1,
-            text_color=("gray10", "gray90"),
-            border_color=("gray70", "gray30"),
-            hover_color=("gray85", "gray25"),
-            command=self._open_settings,
+        # Usage bar in sidebar (row 9, only visible for claude_abo)
+        self.sidebar_usage_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.sidebar_usage_bar = ctk.CTkProgressBar(
+            self.sidebar_usage_frame, height=8, corner_radius=4, width=140,
         )
-        self.settings_button.grid(row=11, column=0, padx=16, pady=(0, 8), sticky="ew")
+        self.sidebar_usage_bar.set(0)
+        self.sidebar_usage_label = ctk.CTkLabel(
+            self.sidebar_usage_frame, text="", font=ctk.CTkFont(size=10),
+            text_color="gray50",
+        )
+        self.sidebar_usage_bar.pack(padx=16, pady=(4, 0), anchor="w")
+        self.sidebar_usage_label.pack(padx=16, anchor="w")
+
+        if get_setting(self.settings, "backend") == "claude_abo":
+            self.sidebar_usage_frame.grid(row=9, column=0, sticky="ew")
+            self._fetch_sidebar_usage()
+
+        # Bottom: settings + theme + about (rows 11-13)
+        self.settings_button = self._sidebar_btn(
+            "settings", row=11, command=self._open_settings
+        )
 
         self.theme_switch = ctk.CTkSwitch(
-            self.sidebar, text="Dark Mode",
-            font=ctk.CTkFont(size=11),
-            command=self._toggle_theme,
-            onvalue="dark", offvalue="light",
+            self.sidebar, text="Dark Mode", font=ctk.CTkFont(size=11),
+            command=self._toggle_theme, onvalue="dark", offvalue="light",
         )
-        current_mode = ctk.get_appearance_mode().lower()
-        if current_mode == "dark":
+        if ctk.get_appearance_mode().lower() == "dark":
             self.theme_switch.select()
-        self.theme_switch.grid(row=12, column=0, padx=20, pady=(0, 8), sticky="w")
+        self.theme_switch.grid(row=12, column=0, padx=20, pady=(0, 4), sticky="w")
 
-        # About label at the very bottom
-        about_label = ctk.CTkLabel(
-            self.sidebar,
-            text=f"{APP_NAME} v{APP_VERSION}  \u2139",
-            font=ctk.CTkFont(size=10),
-            text_color="gray45",
-            cursor="hand2",
+        self.about_label = ctk.CTkLabel(
+            self.sidebar, text=f"{APP_NAME} v{APP_VERSION}  ℹ",
+            font=ctk.CTkFont(size=10), text_color="gray45", cursor="hand2",
         )
-        about_label.grid(row=13, column=0, padx=20, pady=(0, 12), sticky="w")
-        about_label.bind("<Button-1>", lambda e: self._show_about())
+        self.about_label.grid(row=13, column=0, padx=20, pady=(0, 12), sticky="w")
+        self.about_label.bind("<Button-1>", lambda e: self._show_about())
+
+    def _sidebar_btn(self, key, row, command, primary=False, ghost=False):
+        """Create a sidebar button with icon/text pair for collapse support."""
+        text = SIDEBAR_BUTTONS[key][1]
+        kwargs = {
+            "font": ctk.CTkFont(size=13, weight="bold" if primary else "normal"),
+            "height": 40 if primary else 34, "corner_radius": 8,
+            "command": command,
+        }
+        if primary:
+            pass  # default blue style
+        elif ghost:
+            kwargs.update(fg_color="transparent", text_color=("gray40", "gray60"),
+                          hover_color=("gray85", "gray25"))
+        else:
+            kwargs.update(fg_color="transparent", border_width=1,
+                          text_color=("gray10", "gray90"),
+                          border_color=("gray70", "gray30"),
+                          hover_color=("gray85", "gray25"))
+
+        btn = ctk.CTkButton(self.sidebar, text=text, **kwargs)
+        btn.grid(row=row, column=0, padx=12, pady=(0, 5), sticky="ew")
+        btn._sidebar_key = key  # store key for toggle
+        return btn
+
+    def _check_sidebar_size(self) -> None:
+        """Periodically check window width and auto-collapse/expand sidebar."""
+        try:
+            width = self.winfo_width()
+        except Exception:
+            return  # Window destroyed
+
+        threshold = 750
+
+        if width != self._last_width:
+            if width < threshold and self._sidebar_open:
+                self._toggle_sidebar()
+            elif width >= threshold and not self._sidebar_open:
+                self._toggle_sidebar()
+            self._last_width = width
+
+        # Vorherigen Callback canceln, dann neuen planen
+        if self._sidebar_poll_id is not None:
+            self.after_cancel(self._sidebar_poll_id)
+        self._sidebar_poll_id = self.after(300, self._check_sidebar_size)
+
+    def _toggle_sidebar(self) -> None:
+        """Collapse or expand the sidebar."""
+        self._sidebar_open = not self._sidebar_open
+        all_btns = [self.check_button, self.paste_button, self.copy_button,
+                    self.clear_button, self.translate_button, self.tools_button,
+                    self.settings_button]
+
+        if self._sidebar_open:
+            # ── Expand: full width, text + icons ──
+            self.sidebar.configure(width=SIDEBAR_EXPANDED)
+            self.grid_columnconfigure(0, minsize=SIDEBAR_EXPANDED)
+            self.title_label.grid()
+            pass  # tools_button handled by all_btns
+            self.theme_switch.grid()
+            self.about_label.grid()
+            self.status_label.grid()
+            if get_setting(self.settings, "backend") == "claude_abo":
+                self.sidebar_usage_frame.grid()
+            for btn in all_btns:
+                key = btn._sidebar_key
+                btn.configure(
+                    text=SIDEBAR_BUTTONS[key][1],
+                    width=0,  # auto width
+                    font=ctk.CTkFont(size=13, weight="bold" if key == "check" else "normal"),
+                )
+                btn.grid_configure(padx=12)
+        else:
+            # ── Collapse: narrow, only centered icons ──
+            self.sidebar.configure(width=SIDEBAR_COLLAPSED)
+            self.grid_columnconfigure(0, minsize=SIDEBAR_COLLAPSED)
+            self.title_label.grid_remove()
+            pass  # tools_button handled by all_btns
+            self.theme_switch.grid_remove()
+            self.about_label.grid_remove()
+            self.status_label.grid_remove()
+            self.sidebar_usage_frame.grid_remove()
+            for btn in all_btns:
+                key = btn._sidebar_key
+                btn.configure(
+                    text=SIDEBAR_BUTTONS[key][0],
+                    width=36,
+                    font=ctk.CTkFont(size=16),
+                )
+                btn.grid_configure(padx=6)
+
+    # ── Content Area ───────────────────────────────────────────
 
     def _build_content(self) -> None:
-        """Build the main content area with editor and results."""
+        """Build the main content area with editor, results, and chat."""
         content = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        content.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        content.grid(row=0, column=1, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
-        content.grid_rowconfigure(1, weight=1)  # editor expands
-        content.grid_rowconfigure(3, weight=1)  # results expand
+        content.grid_rowconfigure(1, weight=1)  # editor
+        content.grid_rowconfigure(3, weight=1)  # result tabs
 
-        # Editor label
+        # Editor header with shortcut hint
+        header = ctk.CTkFrame(content, fg_color="transparent")
+        header.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
         ctk.CTkLabel(
-            content, text="Text eingeben",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            anchor="w",
-        ).grid(row=0, column=0, padx=20, pady=(16, 6), sticky="w")
+            header, text="Text eingeben",
+            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            header, text="Ctrl+Enter = Prüfen  |  Ctrl+Shift+P = Clipboard",
+            font=ctk.CTkFont(size=10), text_color="gray50", anchor="e",
+        ).pack(side="right")
 
-        # Editor textbox
+        # Editor
         self.editor = ctk.CTkTextbox(
-            content,
-            font=ctk.CTkFont(size=14),
-            corner_radius=8,
-            border_width=1,
-            border_color=("gray75", "gray25"),
+            content, font=ctk.CTkFont(size=14),
+            corner_radius=8, border_width=1, border_color=("gray75", "gray25"),
         )
-        self.editor.grid(row=1, column=0, padx=20, pady=(0, 8), sticky="nsew")
+        self.editor.grid(row=1, column=0, padx=20, pady=(0, 6), sticky="nsew")
 
-        # Results label
-        self.result_header = ctk.CTkLabel(
+        # Result header
+        ctk.CTkLabel(
             content, text="Ergebnis",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            anchor="w",
-        )
-        self.result_header.grid(row=2, column=0, padx=20, pady=(8, 6), sticky="w")
+            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+        ).grid(row=2, column=0, padx=20, pady=(6, 4), sticky="w")
 
-        # Results area (tabview with corrected text + errors)
+        # Result tabs (Korrektur + Fehler + Chat)
         self.result_tabs = ctk.CTkTabview(
-            content,
-            corner_radius=8,
-            border_width=1,
+            content, corner_radius=8, border_width=1,
             border_color=("gray75", "gray25"),
         )
-        self.result_tabs.grid(row=3, column=0, padx=20, pady=(0, 16), sticky="nsew")
+        self.result_tabs.grid(row=3, column=0, padx=20, pady=(0, 6), sticky="nsew")
 
-        tab_corrected = self.result_tabs.add("Korrigierter Text")
+        # Tab 1: Korrigierter Text
+        tab_corrected = self.result_tabs.add("Korrektur")
         tab_corrected.grid_columnconfigure(0, weight=1)
         tab_corrected.grid_rowconfigure(0, weight=1)
-
         self.corrected_text = ctk.CTkTextbox(
-            tab_corrected,
-            font=ctk.CTkFont(size=14),
-            corner_radius=6,
-            state="disabled",
+            tab_corrected, font=ctk.CTkFont(size=14),
+            corner_radius=6, state="disabled",
         )
         self.corrected_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
+        # Tab 2: Fehler
         tab_errors = self.result_tabs.add("Fehler")
         tab_errors.grid_columnconfigure(0, weight=1)
         tab_errors.grid_rowconfigure(0, weight=1)
-
         self.errors_text = ctk.CTkTextbox(
-            tab_errors,
-            font=ctk.CTkFont(size=13),
-            corner_radius=6,
-            state="disabled",
+            tab_errors, font=ctk.CTkFont(size=13),
+            corner_radius=6, state="disabled",
         )
         self.errors_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
-        # Summary label
-        self.summary_label = ctk.CTkLabel(
-            content, text="",
-            font=ctk.CTkFont(size=12),
-            text_color="gray50",
-            anchor="w",
+        # Tab 3: Chat
+        tab_chat = self.result_tabs.add("Chat")
+        tab_chat.grid_columnconfigure(0, weight=1)
+        tab_chat.grid_rowconfigure(0, weight=1)
+
+        self.chat_display = ctk.CTkTextbox(
+            tab_chat, font=ctk.CTkFont(size=13),
+            corner_radius=6, state="disabled",
         )
-        self.summary_label.grid(row=4, column=0, padx=20, pady=(0, 10), sticky="w")
+        self.chat_display.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))
+
+        # Chat input row
+        chat_input_frame = ctk.CTkFrame(tab_chat, fg_color="transparent")
+        chat_input_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        chat_input_frame.grid_columnconfigure(0, weight=1)
+
+        self.chat_entry = ctk.CTkEntry(
+            chat_input_frame, placeholder_text="Frage stellen...",
+            font=ctk.CTkFont(size=13), height=36,
+        )
+        self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.chat_entry.bind("<Return>", lambda e: self._on_chat_send())
+
+        self.chat_send_btn = ctk.CTkButton(
+            chat_input_frame, text="Senden", width=80, height=36,
+            command=self._on_chat_send,
+        )
+        self.chat_send_btn.grid(row=0, column=1)
+
+        # Summary
+        self.summary_label = ctk.CTkLabel(
+            content, text="", font=ctk.CTkFont(size=11),
+            text_color="gray50", anchor="w",
+        )
+        self.summary_label.grid(row=4, column=0, padx=20, pady=(0, 8), sticky="w")
+
+    # ── Sidebar actions ────────────────────────────────────────
 
     def _toggle_theme(self) -> None:
-        """Toggle between light and dark mode."""
-        mode = self.theme_switch.get()
-        ctk.set_appearance_mode(mode)
+        ctk.set_appearance_mode(self.theme_switch.get())
 
     def _on_hotkey_check(self, text: str) -> None:
-        """Called from clipboard monitor thread when Ctrl+Shift+P is pressed."""
-        # Bounce to GUI thread
         self.after(0, self._do_hotkey_check, text)
 
     def _do_hotkey_check(self, text: str) -> None:
-        """Insert clipboard text into editor and start check (GUI thread)."""
         self.editor.delete("0.0", "end")
         self.editor.insert("0.0", text)
         self._on_check()
-        # Bring window to front
         self.lift()
         self.focus_force()
 
     def _show_about(self) -> None:
-        """Show a simple about dialog."""
         about = ctk.CTkToplevel(self)
         about.title(f"Über {APP_NAME}")
-        about.geometry("340x200")
+        about.geometry("340x220")
         about.resizable(False, False)
         about.transient(self)
         about.grab_set()
 
-        ctk.CTkLabel(
-            about, text=APP_NAME,
-            font=ctk.CTkFont(size=20, weight="bold"),
-        ).pack(pady=(20, 4))
-
-        ctk.CTkLabel(
-            about, text=f"Version {APP_VERSION}",
-            font=ctk.CTkFont(size=13), text_color="gray50",
-        ).pack()
-
-        ctk.CTkLabel(
-            about,
-            text="KI-gestützter Rechtschreib-\nund Grammatikprüfer für Windows",
-            font=ctk.CTkFont(size=12), text_color="gray60",
-            justify="center",
-        ).pack(pady=(8, 0))
-
-        ctk.CTkButton(
-            about, text="Schließen", width=100,
-            command=about.destroy,
-        ).pack(pady=(16, 0))
+        ctk.CTkLabel(about, text=APP_NAME,
+                     font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(20, 4))
+        ctk.CTkLabel(about, text=f"Version {APP_VERSION}",
+                     font=ctk.CTkFont(size=13), text_color="gray50").pack()
+        ctk.CTkLabel(about, text="KI-gestützter Rechtschreib-\nund Grammatikprüfer für Windows",
+                     font=ctk.CTkFont(size=12), text_color="gray60",
+                     justify="center").pack(pady=(8, 0))
+        ctk.CTkLabel(about, text="Ctrl+Enter = Prüfen  |  Ctrl+Shift+P = Clipboard",
+                     font=ctk.CTkFont(size=10), text_color="gray45").pack(pady=(4, 0))
+        ctk.CTkButton(about, text="Schließen", width=100,
+                      command=about.destroy).pack(pady=(12, 0))
 
     def _on_close(self) -> None:
-        """Clean up hotkey listener and close app."""
         self._clipboard.stop()
+        self._pool.shutdown(wait=False)
+        if self._sidebar_poll_id is not None:
+            self.after_cancel(self._sidebar_poll_id)
         self.destroy()
 
     def _open_settings(self) -> None:
-        """Open the settings dialog (singleton pattern)."""
-        # If dialog already open, just focus it
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             self._settings_dialog.focus()
             return
-
-        # Open modal dialog and wait until it closes
         self._settings_dialog = SettingsDialog(self, self.settings)
         self.wait_window(self._settings_dialog)
-
-        # Apply new settings if user clicked Save
         if self._settings_dialog.result is not None:
             self.settings = self._settings_dialog.result
             logger.info("Settings updated by user")
+            # Update sidebar usage if backend changed
+            if get_setting(self.settings, "backend") == "claude_abo":
+                self.sidebar_usage_frame.grid(row=9, column=0, sticky="ew")
+                self._fetch_sidebar_usage()
+            else:
+                self.sidebar_usage_frame.grid_remove()
+
+    # ── Usage in Sidebar ───────────────────────────────────────
+
+    def _fetch_sidebar_usage(self) -> None:
+        """Fetch usage data for sidebar display (background)."""
+        def fetch():
+            try:
+                import requests
+                from app.backends.claude_oauth import _get_valid_token, _VERIFY
+                token = _get_valid_token()
+                resp = requests.get(
+                    "https://api.anthropic.com/api/oauth/usage",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "User-Agent": "claude-cli/2.1.75",
+                        "Accept": "application/json",
+                        "anthropic-version": "2023-06-01",
+                        "anthropic-beta": "oauth-2025-04-20",
+                    }, timeout=8, verify=_VERIFY,
+                )
+                if resp.status_code == 200:
+                    self.after(0, self._on_sidebar_usage, resp.json())
+            except Exception:
+                pass
+        self._pool.submit(fetch)
+
+    def _on_sidebar_usage(self, data: dict) -> None:
+        pct = data.get("five_hour", {}).get("utilization", 0) or 0
+        self.sidebar_usage_bar.set(pct / 100)
+        color = "#D32F2F" if pct >= 80 else "#EF6C00" if pct >= 50 else "#3B82F6"
+        self.sidebar_usage_bar.configure(progress_color=color)
+        self.sidebar_usage_label.configure(text=f"Nutzung: {pct:.0f}%")
+
+    # ── Backend ────────────────────────────────────────────────
 
     def _create_backend(self) -> BaseBackend:
-        """Create the backend based on current settings."""
         backend_type = get_setting(self.settings, "backend")
-
         if backend_type == "claude_api":
             return ClaudeBackend(
                 api_key=get_setting(self.settings, "claude_api_key"),
                 model=get_setting(self.settings, "claude_model"),
             )
-
         if backend_type == "claude_abo":
-            # Ensure full model ID (old settings may have short names)
             model = self.settings.get("proxy_model", "claude-sonnet-4-20250514")
             if model == "claude-sonnet-4":
                 model = "claude-sonnet-4-20250514"
             elif model == "claude-haiku-4":
                 model = "claude-haiku-4-5-20251001"
             return ClaudeOAuthBackend(model=model)
-
-        # Default: Ollama
         return OllamaBackend(
             base_url=get_setting(self.settings, "ollama_url"),
             model=get_setting(self.settings, "ollama_model"),
         )
 
+    # ── Text Check ─────────────────────────────────────────────
+
+    MAX_TEXT_LENGTH = 50_000  # ~25 Seiten, verhindert API-Kostenexplosion
+
     def _on_check(self) -> None:
-        """Handle the check button click."""
         text = self.editor.get("0.0", "end").strip()
         if not text:
             self._set_status("Bitte Text eingeben.", "warning")
             return
-
+        if len(text) > self.MAX_TEXT_LENGTH:
+            self._set_status(
+                f"Text zu lang ({len(text)} Zeichen, max {self.MAX_TEXT_LENGTH}).", "warning"
+            )
+            return
         if self._checking:
             return
 
         self._checking = True
-        self.check_button.configure(state="disabled", text="\u23F3  Prüfe...")
+        self.check_button.configure(state="disabled", text="⏳  Prüfe...")
         self._set_status("Text wird geprüft...", "info")
-
         language = get_setting(self.settings, "language")
 
-        thread = threading.Thread(
-            target=self._run_check, args=(text, language), daemon=True
-        )
-        thread.start()
+        self._pool.submit(self._run_check, text, language)
 
     def _run_check(self, text: str, language: str) -> None:
-        """Run the text check in a background thread."""
         try:
             backend = self._create_backend()
             result = check_text(backend, text, language)
@@ -372,13 +516,8 @@ class MainWindow(ctk.CTk):
             self.after(0, self._on_check_error, f"Unerwarteter Fehler: {e}")
 
     def _on_check_done(self, result: dict[str, Any]) -> None:
-        """Handle successful check result (called on GUI thread)."""
         self._checking = False
-        self.check_button.configure(state="normal", text="\u2714  Text prüfen")
-
-        # Summary
-        summary = result.get("summary", "")
-        self.summary_label.configure(text=summary)
+        self.check_button.configure(state="normal", text=SIDEBAR_BUTTONS["check"][1])
 
         # Corrected text
         self.corrected_text.configure(state="normal")
@@ -389,86 +528,626 @@ class MainWindow(ctk.CTk):
         # Errors
         self.errors_text.configure(state="normal")
         self.errors_text.delete("0.0", "end")
-
         errors = result.get("errors", [])
         if not errors:
             self.errors_text.insert("0.0", "Keine Fehler gefunden!")
         else:
-            for i, error in enumerate(errors):
-                error_type = error.get("type", "grammar")
-                type_labels = {
-                    "spelling": "Rechtschreibung",
-                    "grammar": "Grammatik",
-                    "style": "Stil",
-                }
-                type_label = type_labels.get(error_type, error_type)
-
+            for i, err in enumerate(errors):
+                typ = {"spelling": "Rechtschreibung", "grammar": "Grammatik",
+                       "style": "Stil"}.get(err.get("type", "grammar"), err.get("type", ""))
                 if i > 0:
                     self.errors_text.insert("end", "\n\n")
-
-                self.errors_text.insert(
-                    "end",
-                    f"[{type_label}] \"{error.get('original', '')}\" "
-                    f"\u2192 \"{error.get('suggestion', '')}\"\n",
-                )
-                explanation = error.get("explanation", "")
-                if explanation:
-                    self.errors_text.insert("end", f"  {explanation}")
-
+                self.errors_text.insert("end",
+                    f"[{typ}] \"{err.get('original', '')}\" → \"{err.get('suggestion', '')}\"\n")
+                if err.get("explanation"):
+                    self.errors_text.insert("end", f"  {err['explanation']}")
         self.errors_text.configure(state="disabled")
 
-        # Highlight errors in the editor
         self._highlight_errors(errors)
+        self.summary_label.configure(text=result.get("summary", ""))
 
-        error_count = len(errors)
-        if error_count == 0:
+        n = len(errors)
+        if n == 0:
             self._set_status("Keine Fehler gefunden!", "success")
         else:
-            self._set_status(f"{error_count} Fehler gefunden.", "info")
+            self._set_status(f"{n} Fehler gefunden.", "info")
 
     def _highlight_errors(self, errors: list[dict]) -> None:
-        """Mark error words in the editor with colored underlines."""
-        # Access the internal tk.Text widget of CTkTextbox
-        text_widget = self.editor._textbox
+        tw = self.editor._textbox
+        for tag in ("error_spelling", "error_grammar", "error_style"):
+            tw.tag_remove(tag, "1.0", "end")
+        tw.tag_configure("error_spelling", underline=True, foreground="#D32F2F")
+        tw.tag_configure("error_grammar", underline=True, foreground="#EF6C00")
+        tw.tag_configure("error_style", underline=True, foreground="#1565C0")
 
-        # Remove old highlights
-        text_widget.tag_remove("error_spelling", "1.0", "end")
-        text_widget.tag_remove("error_grammar", "1.0", "end")
-        text_widget.tag_remove("error_style", "1.0", "end")
-
-        # Configure tag styles (underline + color)
-        text_widget.tag_configure("error_spelling", underline=True, foreground="#D32F2F")
-        text_widget.tag_configure("error_grammar", underline=True, foreground="#EF6C00")
-        text_widget.tag_configure("error_style", underline=True, foreground="#1565C0")
-
-        # Search and highlight each error in the editor text
-        editor_text = self.editor.get("0.0", "end")
-        for error in errors:
-            original = error.get("original", "")
+        for err in errors:
+            original = err.get("original", "")
             if not original:
                 continue
-
-            error_type = error.get("type", "grammar")
-            tag = f"error_{error_type}" if error_type in ("spelling", "grammar", "style") else "error_grammar"
-
-            # Find all occurrences of the error text
-            start_idx = "1.0"
+            t = err.get("type", "grammar")
+            tag = f"error_{t}" if t in ("spelling", "grammar", "style") else "error_grammar"
+            idx = "1.0"
             while True:
-                pos = text_widget.search(original, start_idx, stopindex="end", nocase=True)
+                pos = tw.search(original, idx, stopindex="end", nocase=True)
                 if not pos:
                     break
-                end_pos = f"{pos}+{len(original)}c"
-                text_widget.tag_add(tag, pos, end_pos)
-                start_idx = end_pos
+                tw.tag_add(tag, pos, f"{pos}+{len(original)}c")
+                idx = f"{pos}+{len(original)}c"
 
     def _on_check_error(self, message: str) -> None:
-        """Handle check error (called on GUI thread)."""
         self._checking = False
-        self.check_button.configure(state="normal", text="\u2714  Text prüfen")
+        self.check_button.configure(state="normal", text=SIDEBAR_BUTTONS["check"][1])
         self._set_status(message, "error")
 
+    # ── Translate ──────────────────────────────────────────────
+
+    TRANSLATE_LANGUAGES = [
+        "Englisch", "Deutsch", "Französisch", "Spanisch",
+        "Italienisch", "Portugiesisch", "Türkisch", "Russisch",
+        "Chinesisch", "Japanisch", "Koreanisch", "Arabisch",
+        "Polnisch", "Niederländisch", "Schwedisch",
+    ]
+
+    def _on_translate(self) -> None:
+        """Open language picker, then translate."""
+        text = self.editor.get("0.0", "end").strip()
+        if not text:
+            self._set_status("Bitte Text eingeben.", "warning")
+            return
+        if self._checking:
+            return
+
+        # Small dialog to pick target language
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Übersetzen nach...")
+        dialog.geometry("300x160")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog, text="Zielsprache wählen:",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(pady=(16, 8))
+
+        lang_menu = ctk.CTkOptionMenu(
+            dialog, values=self.TRANSLATE_LANGUAGES, width=220,
+        )
+        lang_menu.set("Englisch")
+        lang_menu.pack(pady=(0, 12))
+
+        def start():
+            target = lang_menu.get()
+            dialog.destroy()
+            self._run_translate(text, target)
+
+        ctk.CTkButton(
+            dialog, text="Übersetzen", width=120, command=start,
+        ).pack()
+
+    def _run_translate(self, text: str, target_language: str) -> None:
+        """Run translation in background thread."""
+        self._checking = True
+        self.translate_button.configure(state="disabled")
+        self._set_status(f"Übersetze nach {target_language}...", "info")
+
+        def run():
+            try:
+                backend = self._create_backend()
+                prompt = build_translate_prompt(text, target_language)
+                result = backend.check_text(prompt)
+                self.after(0, self._on_translate_done, result, target_language)
+            except Exception as e:
+                self.after(0, self._on_translate_error, str(e))
+
+        self._pool.submit(run)
+
+    def _on_translate_done(self, result: str, target: str) -> None:
+        self._checking = False
+        self.translate_button.configure(state="normal")
+        self.corrected_text.configure(state="normal")
+        self.corrected_text.delete("0.0", "end")
+        self.corrected_text.insert("0.0", result)
+        self.corrected_text.configure(state="disabled")
+        self.result_tabs.set("Korrektur")
+        self._set_status(f"Übersetzung fertig (→ {target})", "success")
+
+    def _on_translate_error(self, message: str) -> None:
+        self._checking = False
+        self.translate_button.configure(state="normal")
+        self._set_status(f"Übersetzung fehlgeschlagen: {message}", "error")
+
+    # ── KI-Werkzeuge Panel ─────────────────────────────────────
+
+    # Jedes Tool: (icon, name, beschreibung, callback_key)
+    TOOLS = [
+        ("✏️", "Ton anpassen", "Text in einen anderen Stil umschreiben", "tone"),
+        ("📝", "Kürzen", "Auf die Kernaussagen komprimieren", "shorten"),
+        ("📖", "Erweitern", "Stichpunkte zu Fließtext ausbauen", "expand"),
+        ("🔄", "Umformulieren", "Gleicher Inhalt, andere Worte", "rephrase"),
+        ("✉️", "E-Mail verfassen", "Professionelle E-Mail aus Kontext", "email"),
+        ("📊", "Analysieren", "Statistiken, Lesbarkeit, Tonalität", "analyze"),
+    ]
+
+    def _open_tools_panel(self) -> None:
+        """Öffnet ein Werkzeug-Panel mit detaillierten Einstellungen pro Tool."""
+        panel = ctk.CTkToplevel(self)
+        panel.title("KI-Werkzeuge")
+        panel.geometry("520x600")
+        panel.minsize(480, 500)
+        panel.transient(self)
+        panel.grab_set()
+
+        # Header
+        ctk.CTkLabel(
+            panel, text="🔧 KI-Werkzeuge",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(padx=20, pady=(16, 4), anchor="w")
+        ctk.CTkLabel(
+            panel, text="Konfiguriere und starte ein Werkzeug für deinen Text.",
+            font=ctk.CTkFont(size=12), text_color="gray50",
+        ).pack(padx=20, pady=(0, 8), anchor="w")
+
+        # Tabs für jedes Tool
+        tabs = ctk.CTkTabview(panel, corner_radius=8)
+        tabs.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+        self._build_tone_tab(tabs, panel)
+        self._build_shorten_tab(tabs, panel)
+        self._build_expand_tab(tabs, panel)
+        self._build_rephrase_tab(tabs, panel)
+        self._build_email_tab(tabs, panel)
+        self._build_analyze_tab(tabs, panel)
+
+    # ── Ton anpassen Tab ──
+
+    def _build_tone_tab(self, tabs, panel):
+        tab = tabs.add("✏️ Ton")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Ton anpassen",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(tab, text="Schreibe den Text in einem anderen Stil um.",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        # Ton-Auswahl
+        ctk.CTkLabel(tab, text="Ziel-Ton:").grid(row=2, column=0, padx=12, sticky="w")
+        tone_var = ctk.CTkOptionMenu(tab, values=[
+            "Formell / Geschäftlich",
+            "Freundlich / Warm",
+            "Professionell / Sachlich",
+            "Locker / Umgangssprachlich",
+            "Akademisch / Wissenschaftlich",
+            "Überzeugend / Werblich",
+            "Diplomatisch / Vorsichtig",
+        ], width=280)
+        tone_var.grid(row=3, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        # Zusatzanweisungen
+        ctk.CTkLabel(tab, text="Zusätzliche Anweisungen (optional):").grid(
+            row=4, column=0, padx=12, pady=(4, 0), sticky="w")
+        extra_entry = ctk.CTkEntry(tab, placeholder_text="z.B. 'Kurze Sätze verwenden'")
+        extra_entry.grid(row=5, column=0, padx=12, pady=(4, 8), sticky="ew")
+
+        # Formelle Anrede
+        formal_switch = ctk.CTkSwitch(tab, text="Sie-Form verwenden")
+        formal_switch.grid(row=6, column=0, padx=12, pady=4, sticky="w")
+
+        def run():
+            text = self.editor.get("0.0", "end").strip()
+            if not text:
+                return
+            tone = tone_var.get()
+            extra = extra_entry.get().strip()[:200]  # Länge begrenzen
+            # Verdächtige Injection-Patterns entfernen
+            for bad in ("ignore", "vergiss", "system prompt", "forget", "disregard"):
+                extra = extra.replace(bad, "")
+            sie = "Verwende die Sie-Form." if formal_switch.get() else ""
+            prompt = f"Schreibe den folgenden Text um im Ton: {tone}.\n{sie}\n"
+            if extra:
+                prompt += f"Stilhinweis: {extra}\n"
+            prompt += f"Gib NUR den umgeschriebenen Text zurück.\n\n{text}"
+            panel.destroy()
+            self._run_tool(f"Ton → {tone}...", prompt)
+
+        ctk.CTkButton(tab, text="Anwenden", width=140, height=36,
+                      command=run).grid(row=7, column=0, padx=12, pady=(12, 0), sticky="w")
+
+    # ── Kürzen Tab ──
+
+    def _build_shorten_tab(self, tabs, panel):
+        tab = tabs.add("📝 Kürzen")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Text kürzen",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+
+        # Ziel-Länge
+        ctk.CTkLabel(tab, text="Kürzen auf:").grid(row=1, column=0, padx=12, sticky="w")
+        length_var = ctk.CTkOptionMenu(tab, values=[
+            "Kernaussagen (so kurz wie möglich)",
+            "Ungefähr die Hälfte",
+            "Ein Drittel der Länge",
+            "Maximal 3 Sätze",
+            "Maximal 1 Satz (Zusammenfassung)",
+        ], width=300)
+        length_var.grid(row=2, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        # Was beibehalten
+        ctk.CTkLabel(tab, text="Beibehalten:").grid(row=3, column=0, padx=12, pady=(4, 0), sticky="w")
+        keep_facts = ctk.CTkSwitch(tab, text="Fakten und Zahlen")
+        keep_facts.select()
+        keep_facts.grid(row=4, column=0, padx=12, pady=2, sticky="w")
+        keep_names = ctk.CTkSwitch(tab, text="Namen und Orte")
+        keep_names.select()
+        keep_names.grid(row=5, column=0, padx=12, pady=2, sticky="w")
+        keep_structure = ctk.CTkSwitch(tab, text="Absatzstruktur")
+        keep_structure.grid(row=6, column=0, padx=12, pady=2, sticky="w")
+
+        def run():
+            text = self.editor.get("0.0", "end").strip()
+            if not text:
+                return
+            target = length_var.get()
+            keep = []
+            if keep_facts.get():
+                keep.append("Fakten und Zahlen beibehalten")
+            if keep_names.get():
+                keep.append("Namen und Orte beibehalten")
+            if keep_structure.get():
+                keep.append("Absatzstruktur beibehalten")
+            keep_str = ". ".join(keep) + "." if keep else ""
+            prompt = (f"Kürze den folgenden Text. Ziel: {target}.\n{keep_str}\n"
+                      f"Gib NUR den gekürzten Text zurück.\n\n{text}")
+            panel.destroy()
+            self._run_tool("Kürze...", prompt)
+
+        ctk.CTkButton(tab, text="Kürzen", width=140, height=36,
+                      command=run).grid(row=7, column=0, padx=12, pady=(12, 0), sticky="w")
+
+    # ── Erweitern Tab ──
+
+    def _build_expand_tab(self, tabs, panel):
+        tab = tabs.add("📖 Erweitern")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Text erweitern",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+
+        ctk.CTkLabel(tab, text="Erweiterungsart:").grid(row=1, column=0, padx=12, sticky="w")
+        expand_var = ctk.CTkOptionMenu(tab, values=[
+            "Details und Erklärungen hinzufügen",
+            "Beispiele ergänzen",
+            "Übergänge und Fließtext erstellen",
+            "Einleitung und Fazit hinzufügen",
+        ], width=300)
+        expand_var.grid(row=2, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        ctk.CTkLabel(tab, text="Ungefähre Ziellänge:").grid(row=3, column=0, padx=12, sticky="w")
+        target_len = ctk.CTkOptionMenu(tab, values=[
+            "Doppelt so lang", "Dreifach", "Ein Absatz mehr", "Frei (so viel wie nötig)",
+        ], width=250)
+        target_len.grid(row=4, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        def run():
+            text = self.editor.get("0.0", "end").strip()
+            if not text:
+                return
+            how = expand_var.get()
+            length = target_len.get()
+            prompt = (f"Erweitere den folgenden Text. Art: {how}. Ziellänge: {length}.\n"
+                      f"Behalte Inhalt und Ton bei.\nGib NUR den erweiterten Text zurück.\n\n{text}")
+            panel.destroy()
+            self._run_tool("Erweitere...", prompt)
+
+        ctk.CTkButton(tab, text="Erweitern", width=140, height=36,
+                      command=run).grid(row=5, column=0, padx=12, pady=(12, 0), sticky="w")
+
+    # ── Umformulieren Tab ──
+
+    def _build_rephrase_tab(self, tabs, panel):
+        tab = tabs.add("🔄 Umformulieren")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Text umformulieren",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+
+        ctk.CTkLabel(tab, text="Stil:").grid(row=1, column=0, padx=12, sticky="w")
+        style_var = ctk.CTkOptionMenu(tab, values=[
+            "Komplett anders formulieren",
+            "Nur einzelne Wörter ersetzen",
+            "Satzstruktur ändern, Worte behalten",
+            "Aktiv statt Passiv",
+            "Einfacher ausdrücken",
+        ], width=300)
+        style_var.grid(row=2, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        keep_meaning = ctk.CTkSwitch(tab, text="Exakte Bedeutung beibehalten")
+        keep_meaning.select()
+        keep_meaning.grid(row=3, column=0, padx=12, pady=4, sticky="w")
+
+        keep_length = ctk.CTkSwitch(tab, text="Ungefähr gleiche Länge")
+        keep_length.select()
+        keep_length.grid(row=4, column=0, padx=12, pady=4, sticky="w")
+
+        def run():
+            text = self.editor.get("0.0", "end").strip()
+            if not text:
+                return
+            style = style_var.get()
+            rules = []
+            if keep_meaning.get():
+                rules.append("Die exakte Bedeutung muss erhalten bleiben")
+            if keep_length.get():
+                rules.append("Die Länge soll ungefähr gleich bleiben")
+            rules_str = ". ".join(rules) + "." if rules else ""
+            prompt = (f"Formuliere den folgenden Text um. Stil: {style}.\n{rules_str}\n"
+                      f"Gib NUR den umformulierten Text zurück.\n\n{text}")
+            panel.destroy()
+            self._run_tool("Formuliere um...", prompt)
+
+        ctk.CTkButton(tab, text="Umformulieren", width=140, height=36,
+                      command=run).grid(row=5, column=0, padx=12, pady=(12, 0), sticky="w")
+
+    # ── E-Mail Tab ──
+
+    def _build_email_tab(self, tabs, panel):
+        tab = tabs.add("✉️ E-Mail")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="E-Mail verfassen",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(tab, text="Erstellt eine E-Mail basierend auf deinem Text.",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        ctk.CTkLabel(tab, text="E-Mail-Typ:").grid(row=2, column=0, padx=12, sticky="w")
+        email_type = ctk.CTkOptionMenu(tab, values=[
+            "Antwort auf eine Nachricht",
+            "Neue E-Mail / Anfrage",
+            "Beschwerde",
+            "Bewerbung / Anschreiben",
+            "Terminbestätigung",
+            "Absage (höflich)",
+            "Dankesschreiben",
+        ], width=280)
+        email_type.grid(row=3, column=0, padx=12, pady=(4, 8), sticky="w")
+
+        ctk.CTkLabel(tab, text="Anrede:").grid(row=4, column=0, padx=12, sticky="w")
+        greeting = ctk.CTkEntry(tab, placeholder_text="z.B. Sehr geehrte Frau Müller")
+        greeting.grid(row=5, column=0, padx=12, pady=(4, 8), sticky="ew")
+
+        formal_email = ctk.CTkSwitch(tab, text="Formell (Sie-Form)")
+        formal_email.select()
+        formal_email.grid(row=6, column=0, padx=12, pady=4, sticky="w")
+
+        def run():
+            text = self.editor.get("0.0", "end").strip()
+            if not text:
+                return
+            typ = email_type.get()
+            anrede = greeting.get().strip()
+            sie = "Verwende die Sie-Form." if formal_email.get() else "Verwende die Du-Form."
+            prompt = (f"Schreibe eine {typ} als E-Mail. {sie}\n")
+            if anrede:
+                prompt += f"Beginne mit: '{anrede}'\n"
+            prompt += f"Ton: höflich, professionell.\nGib NUR die E-Mail zurück.\n\nKontext:\n{text}"
+            panel.destroy()
+            self._run_tool("Schreibe E-Mail...", prompt)
+
+        ctk.CTkButton(tab, text="E-Mail erstellen", width=140, height=36,
+                      command=run).grid(row=7, column=0, padx=12, pady=(12, 0), sticky="w")
+
+    # ── Analysieren Tab ──
+
+    def _build_analyze_tab(self, tabs, panel):
+        tab = tabs.add("📊 Analyse")
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Text analysieren",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(tab, text="Statistiken + KI-Bewertung deines Textes.",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        # Vorschau: Live-Statistiken
+        text = self.editor.get("0.0", "end").strip()
+        words = len(text.split()) if text else 0
+        chars = len(text)
+        sents = len([s for s in text.replace("!", ".").replace("?", ".").split(".") if s.strip()]) if text else 0
+        read_min = max(1, round(words / 200))
+
+        stats_frame = ctk.CTkFrame(tab, corner_radius=8)
+        stats_frame.grid(row=2, column=0, padx=12, pady=8, sticky="ew")
+        stats_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        for col, (val, label) in enumerate([
+            (str(chars), "Zeichen"), (str(words), "Wörter"),
+            (str(sents), "Sätze"), (f"~{read_min} Min", "Lesezeit"),
+        ]):
+            ctk.CTkLabel(stats_frame, text=val,
+                         font=ctk.CTkFont(size=18, weight="bold")).grid(
+                row=0, column=col, padx=8, pady=(8, 0))
+            ctk.CTkLabel(stats_frame, text=label,
+                         font=ctk.CTkFont(size=10), text_color="gray50").grid(
+                row=1, column=col, padx=8, pady=(0, 8))
+
+        ctk.CTkLabel(tab, text="Die KI-Analyse bewertet zusätzlich:",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=3, column=0, padx=12, pady=(4, 0), sticky="w")
+        ctk.CTkLabel(tab, text="• Lesbarkeit  • Tonalität  • Verbesserungsvorschläge",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=4, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        def run():
+            panel.destroy()
+            t = self.editor.get("0.0", "end").strip()
+            if t:
+                self._run_analyze(t)
+
+        ctk.CTkButton(tab, text="Analyse starten", width=140, height=36,
+                      command=run).grid(row=5, column=0, padx=12, pady=(8, 0), sticky="w")
+
+    def _run_tool(self, status_text: str, prompt: str) -> None:
+        """Führt ein KI-Tool im Hintergrund aus, Ergebnis im Korrektur-Tab."""
+        self._checking = True
+        self._set_status(status_text, "info")
+
+        def run():
+            try:
+                backend = self._create_backend()
+                result = backend.check_text(prompt)
+                self.after(0, self._on_tool_done, result)
+            except Exception as e:
+                self.after(0, self._on_tool_error, str(e))
+
+        self._pool.submit(run)
+
+    def _on_tool_done(self, result: str) -> None:
+        self._checking = False
+        self.corrected_text.configure(state="normal")
+        self.corrected_text.delete("0.0", "end")
+        self.corrected_text.insert("0.0", result)
+        self.corrected_text.configure(state="disabled")
+        self.result_tabs.set("Korrektur")
+        self._set_status("Fertig!", "success")
+
+    def _on_tool_error(self, message: str) -> None:
+        self._checking = False
+        self._set_status(f"Fehler: {message}", "error")
+
+    def _run_analyze(self, text: str) -> None:
+        """Textanalyse: lokale Statistiken sofort + KI-Bewertung im Hintergrund."""
+        import json as json_mod
+
+        # Lokale Statistiken sofort berechnen
+        words = text.split()
+        sentences = [s.strip() for s in text.replace("!", ".").replace("?", ".").split(".")
+                     if s.strip()]
+        word_count = len(words)
+        sentence_count = max(len(sentences), 1)
+        avg_len = round(word_count / sentence_count, 1)
+        char_count = len(text)
+        read_min = max(1, round(word_count / 200))
+
+        local_stats = (
+            f"📊 Textanalyse\n\n"
+            f"  Zeichen:       {char_count}\n"
+            f"  Wörter:        {word_count}\n"
+            f"  Sätze:         {sentence_count}\n"
+            f"  Ø Satzlänge:   {avg_len} Wörter\n"
+            f"  Lesezeit:      ~{read_min} Min.\n"
+        )
+
+        # Sofort anzeigen
+        self.errors_text.configure(state="normal")
+        self.errors_text.delete("0.0", "end")
+        self.errors_text.insert("0.0", local_stats + "\n⏳ KI-Bewertung wird geladen...")
+        self.errors_text.configure(state="disabled")
+        self.result_tabs.set("Fehler")
+        self._set_status("KI-Analyse läuft...", "info")
+
+        # KI im Hintergrund
+        self._checking = True
+
+        def run():
+            try:
+                backend = self._create_backend()
+                raw = backend.check_text(build_analyze_prompt(text))
+                try:
+                    data = json_mod.loads(raw.strip())
+                except json_mod.JSONDecodeError:
+                    import re
+                    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", raw, re.DOTALL)
+                    data = json_mod.loads(m.group(1)) if m else {}
+                self.after(0, self._on_analyze_done, local_stats, data)
+            except Exception as e:
+                self.after(0, self._on_analyze_error, local_stats, str(e))
+
+        self._pool.submit(run)
+
+    def _on_analyze_done(self, stats: str, ki: dict) -> None:
+        self._checking = False
+        result = stats + "\n── KI-Bewertung ──\n\n"
+        result += f"  Lesbarkeit:    {ki.get('lesbarkeit', '–')}\n"
+        result += f"  Tonalität:     {ki.get('tonalitaet', '–')}\n"
+        tips = ki.get("verbesserungsvorschlaege", [])
+        if tips:
+            result += "\n  Verbesserungsvorschläge:\n"
+            for t in tips:
+                result += f"    • {t}\n"
+        self.errors_text.configure(state="normal")
+        self.errors_text.delete("0.0", "end")
+        self.errors_text.insert("0.0", result)
+        self.errors_text.configure(state="disabled")
+        self._set_status("Analyse fertig!", "success")
+
+    def _on_analyze_error(self, stats: str, msg: str) -> None:
+        self._checking = False
+        self.errors_text.configure(state="normal")
+        self.errors_text.delete("0.0", "end")
+        self.errors_text.insert("0.0", stats + f"\n⚠ KI-Analyse fehlgeschlagen: {msg}")
+        self.errors_text.configure(state="disabled")
+        self._set_status("KI-Analyse fehlgeschlagen.", "warning")
+
+    # ── Chat ───────────────────────────────────────────────────
+
+    def _on_chat_send(self) -> None:
+        question = self.chat_entry.get().strip()
+        if not question or self._chatting:
+            return
+
+        self._chatting = True
+        self.chat_send_btn.configure(state="disabled")
+        context = self.editor.get("0.0", "end").strip()
+
+        # Show user message in chat
+        self._chat_append(f"Du: {question}\n", bold=True)
+        self.chat_entry.delete(0, "end")
+
+        def run():
+            try:
+                backend = self._create_backend()
+                prompt = build_chat_prompt(question, context)
+                answer = backend.check_text(prompt)
+                self.after(0, self._on_chat_response, answer)
+            except Exception as e:
+                self.after(0, self._on_chat_response, f"Fehler: {e}")
+
+        self._pool.submit(run)
+
+    def _on_chat_response(self, answer: str) -> None:
+        self._chatting = False
+        self.chat_send_btn.configure(state="normal")
+        self._chat_append(f"KI: {answer}\n\n")
+
+    MAX_CHAT_MESSAGES = 50
+
+    def _chat_append(self, text: str, bold: bool = False) -> None:
+        self.chat_display.configure(state="normal")
+        self.chat_display.insert("end", text)
+        self._chat_count += 1
+
+        # Älteste Nachrichten entfernen wenn Limit erreicht
+        if self._chat_count > self.MAX_CHAT_MESSAGES:
+            lines = self.chat_display.get("0.0", "end").split("\n")
+            # Erste 20 Zeilen entfernen
+            if len(lines) > 20:
+                self.chat_display.delete("0.0", f"{20}.0")
+
+        self.chat_display.configure(state="disabled")
+        self.chat_display.see("end")
+
+    # ── Clipboard / Paste / Copy / Clear ───────────────────────
+
     def _on_paste(self) -> None:
-        """Paste text from clipboard into the editor."""
         try:
             text = pyperclip.paste()
             if text:
@@ -482,8 +1161,7 @@ class MainWindow(ctk.CTk):
             self._set_status("Fehler beim Einfügen.", "error")
 
     def _on_clear(self) -> None:
-        """Clear editor, results, and error highlights."""
-        self._highlight_errors([])  # remove highlights
+        self._highlight_errors([])
         self.editor.delete("0.0", "end")
         self.corrected_text.configure(state="normal")
         self.corrected_text.delete("0.0", "end")
@@ -491,11 +1169,13 @@ class MainWindow(ctk.CTk):
         self.errors_text.configure(state="normal")
         self.errors_text.delete("0.0", "end")
         self.errors_text.configure(state="disabled")
+        self.chat_display.configure(state="normal")
+        self.chat_display.delete("0.0", "end")
+        self.chat_display.configure(state="disabled")
         self.summary_label.configure(text="")
         self._set_status("", "info")
 
     def _on_copy(self) -> None:
-        """Copy corrected text to clipboard."""
         self.corrected_text.configure(state="normal")
         text = self.corrected_text.get("0.0", "end").strip()
         self.corrected_text.configure(state="disabled")
@@ -510,14 +1190,7 @@ class MainWindow(ctk.CTk):
             self._set_status("Kein korrigierter Text.", "warning")
 
     def _set_status(self, message: str, level: str = "info") -> None:
-        """Update the status label with colored text."""
-        color_map = {
-            "info": "gray60",
-            "success": "#2E7D32",
-            "warning": "#EF6C00",
-            "error": "#D32F2F",
-        }
-        self.status_label.configure(
-            text=message,
-            text_color=color_map.get(level, "gray60"),
-        )
+        colors = {"info": "gray60", "success": "#2E7D32",
+                  "warning": "#EF6C00", "error": "#D32F2F"}
+        self.status_label.configure(text=message,
+                                    text_color=colors.get(level, "gray60"))

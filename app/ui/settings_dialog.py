@@ -498,6 +498,7 @@ class SettingsDialog(ctk.CTkToplevel):
             result = subprocess.run(
                 ["claude", "auth", "status", "--json"],
                 capture_output=True, text=True, timeout=10,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
             )
             if result.returncode == 0 and result.stdout.strip():
                 data = json_mod.loads(result.stdout)
@@ -544,6 +545,7 @@ class SettingsDialog(ctk.CTkToplevel):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
                 )
                 # Wait for the login process to complete
                 proc.communicate(timeout=120)
