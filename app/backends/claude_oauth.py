@@ -178,11 +178,14 @@ class ClaudeOAuthBackend(BaseBackend):
             response.raise_for_status()
             data = response.json()
 
-            # Extract text from response content blocks
+            # Antwort-Text aus Content-Blöcken extrahieren
             text_parts = []
             for block in data.get("content", []):
                 if block.get("type") == "text":
-                    text_parts.append(block["text"])
+                    text_parts.append(block.get("text", ""))
+
+            if not text_parts:
+                raise RuntimeError("API hat keine Textantwort gegeben.")
 
             content = "\n".join(text_parts)
             duration = time.time() - t0

@@ -27,12 +27,17 @@ class ClipboardMonitor:
 
     def start(self):
         """Start listening for Ctrl+Shift+P in a background thread."""
-        self._listener = GlobalHotKeys({
-            "<ctrl>+<shift>+p": self._on_hotkey,
-        })
-        self._listener.daemon = True
-        self._listener.start()
-        logger.info("Hotkey Ctrl+Shift+P registriert")
+        try:
+            self._listener = GlobalHotKeys({
+                "<ctrl>+<shift>+p": self._on_hotkey,
+            })
+            self._listener.daemon = True
+            self._listener.start()
+            logger.info("Hotkey Ctrl+Shift+P registriert")
+        except Exception as e:
+            logger.error("Hotkey-Registrierung fehlgeschlagen: %s", e)
+            logger.warning("Clipboard-Überwachung deaktiviert (Ctrl+Shift+P nicht verfügbar)")
+            self._listener = None
 
     def stop(self):
         """Stop listening and clean up."""

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip list:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from app.logger import setup_logging; from app.settings import load_settings; from app.checker import build_prompt, parse_response; from app.backends.ollama import OllamaBackend; from app.themes import get_theme; print\\(''All imports OK''\\)\")"
+    ]
+  }
+}

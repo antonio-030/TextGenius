@@ -517,6 +517,11 @@ class MainWindow(ctk.CTk):
 
     def _on_check_done(self, result: dict[str, Any]) -> None:
         self._checking = False
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self.check_button.configure(state="normal", text=SIDEBAR_BUTTONS["check"][1])
 
         # Corrected text
@@ -553,7 +558,12 @@ class MainWindow(ctk.CTk):
             self._set_status(f"{n} Fehler gefunden.", "info")
 
     def _highlight_errors(self, errors: list[dict]) -> None:
-        tw = self.editor._textbox
+        try:
+            if not self.winfo_exists():
+                return
+            tw = self.editor._textbox
+        except Exception:
+            return  # Widget zerstört
         for tag in ("error_spelling", "error_grammar", "error_style"):
             tw.tag_remove(tag, "1.0", "end")
         tw.tag_configure("error_spelling", underline=True, foreground="#D32F2F")
@@ -576,6 +586,11 @@ class MainWindow(ctk.CTk):
 
     def _on_check_error(self, message: str) -> None:
         self._checking = False
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self.check_button.configure(state="normal", text=SIDEBAR_BUTTONS["check"][1])
         self._set_status(message, "error")
 
@@ -1012,6 +1027,11 @@ class MainWindow(ctk.CTk):
 
     def _on_tool_done(self, result: str) -> None:
         self._checking = False
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self.corrected_text.configure(state="normal")
         self.corrected_text.delete("0.0", "end")
         self.corrected_text.insert("0.0", result)
@@ -1125,6 +1145,11 @@ class MainWindow(ctk.CTk):
 
     def _on_chat_response(self, answer: str) -> None:
         self._chatting = False
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self.chat_send_btn.configure(state="normal")
         self._chat_append(f"KI: {answer}\n\n")
 

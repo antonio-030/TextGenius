@@ -41,7 +41,15 @@ class OllamaBackend(BaseBackend):
 
             response = requests.post(url, json=payload, timeout=120)
             response.raise_for_status()
-            data = response.json()
+
+            try:
+                data = response.json()
+            except ValueError:
+                logger.error("Ollama hat ungültiges JSON zurückgegeben")
+                raise RuntimeError(
+                    "Ollama hat eine ungültige Antwort gesendet.\n"
+                    "Bitte Ollama neu starten."
+                )
 
             duration = time.time() - t0
             text = data.get("response", "")

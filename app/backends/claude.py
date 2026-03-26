@@ -31,6 +31,9 @@ class ClaudeBackend(BaseBackend):
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
+
+            if not message.content:
+                raise RuntimeError("Claude API hat keine Antwort gegeben.")
             text = message.content[0].text
 
             duration = time.time() - t0
