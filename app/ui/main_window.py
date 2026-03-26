@@ -19,6 +19,10 @@ from app.checker import (
     build_rephrase_prompt, build_email_prompt, build_analyze_prompt,
     build_brainstorm_prompt, build_plan_prompt, TONE_OPTIONS,
 )
+from app.agent_memory import (
+    load_memory, learn_from_check, record_acceptance,
+    get_smart_tip, get_glossary_suggestions, add_to_glossary,
+)
 from app.clipboard import ClipboardMonitor
 from app.history import save_draft, load_draft, add_to_history, get_history
 from app.settings import get_setting
@@ -479,6 +483,73 @@ class MainWindow(ctk.CTk):
         )
         self.plan_generate_btn.grid(row=0, column=0, sticky="ew")
 
+        # Tab 5: Agent -- Gedächtnis + Profil (transparent)
+        tab_agent = self.result_tabs.add("🧠 Agent")
+        tab_agent.grid_columnconfigure(0, weight=1)
+        tab_agent.grid_rowconfigure(1, weight=1)
+
+        # Agent-Header
+        agent_header = ctk.CTkFrame(tab_agent, fg_color="transparent")
+        agent_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        ctk.CTkLabel(
+            agent_header, text="Agent-Gedächtnis",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            agent_header, text="🔄 Aktualisieren", width=100, height=26,
+            corner_radius=6, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"), border_color=("gray70", "gray30"),
+            command=self._refresh_agent_tab,
+        ).pack(side="right")
+
+        # Agent-Info als scrollbare Textbox
+        self.agent_display = ctk.CTkTextbox(
+            tab_agent, font=ctk.CTkFont(family="Segoe UI", size=12),
+            corner_radius=6, state="disabled", wrap="word",
+            fg_color=("gray96", "gray12"),
+        )
+        self.agent_display.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+
+        # Agent-Tags für Formatierung
+        atw = self.agent_display._textbox
+        atw.tag_config("heading", font=("Segoe UI", 13, "bold"), spacing3=4)
+        atw.tag_config("label", font=("Segoe UI", 11, "bold"), foreground="#2563EB")
+        atw.tag_config("value", font=("Segoe UI", 11))
+        atw.tag_config("weak", foreground="#D32F2F", font=("Segoe UI", 11))
+        atw.tag_config("strong", foreground="#2E7D32", font=("Segoe UI", 11))
+        atw.tag_config("tip", foreground="#EF6C00", font=("Segoe UI", 11, "italic"))
+        atw.tag_config("glossary", font=("Segoe UI", 11), foreground="gray50")
+
+        # Agent-Footer: Glossar hinzufügen + Gedächtnis leeren
+        agent_footer = ctk.CTkFrame(tab_agent, fg_color="transparent")
+        agent_footer.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
+        agent_footer.grid_columnconfigure(0, weight=1)
+
+        self.glossary_entry = ctk.CTkEntry(
+            agent_footer, placeholder_text="Wort zum Glossar hinzufügen...",
+            font=ctk.CTkFont(size=12), height=32, corner_radius=16,
+        )
+        self.glossary_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.glossary_entry.bind("<Return>", lambda e: self._add_glossary_word())
+
+        ctk.CTkButton(
+            agent_footer, text="+", width=32, height=32,
+            corner_radius=16, font=ctk.CTkFont(size=14),
+            command=self._add_glossary_word,
+        ).grid(row=0, column=1, padx=(0, 4))
+
+        ctk.CTkButton(
+            agent_footer, text="🗑", width=32, height=32,
+            corner_radius=16, font=ctk.CTkFont(size=14),
+            fg_color=("gray85", "gray25"), hover_color=("#D32F2F", "#D32F2F"),
+            text_color=("gray40", "gray60"),
+            command=self._clear_agent_memory,
+        ).grid(row=0, column=2)
+
+        # Initial füllen
+        self._refresh_agent_tab()
+
         # Summary
         self.summary_label = ctk.CTkLabel(
             content, text="", font=ctk.CTkFont(size=11),
@@ -876,7 +947,15 @@ class MainWindow(ctk.CTk):
     def _run_check(self, text: str, language: str) -> None:
         try:
             backend = self._create_backend()
-            result = check_text(backend, text, language)
+            # Agent-Kontext aus Gedächtnis laden
+            memory = load_memory()
+            agent_ctx = {
+                "glossary": memory.get("glossary", []),
+                "weak_areas": memory.get("weak_areas", []),
+                "style": memory.get("style", ""),
+                "show_reasoning": memory.get("show_reasoning", True),
+            }
+            result = check_text(backend, text, language, agent_context=agent_ctx)
             self.after(0, self._on_check_done, result)
         except (ConnectionError, ValueError, RuntimeError) as e:
             self.after(0, self._on_check_error, str(e))
@@ -924,13 +1003,27 @@ class MainWindow(ctk.CTk):
         original = self.editor.get("0.0", "end").strip()
         add_to_history(original, result.get("corrected_text", ""), len(errors))
 
+        # Agent lernt aus der Prüfung
+        word_count = len(original.split())
+        memory = learn_from_check(errors, word_count)
+
         n = len(errors)
         if n == 0:
             self._set_status("✔ Keine Fehler gefunden!", "success")
             self.result_tabs.set("Korrektur")
         else:
-            self._set_status(f"✔ {n} Fehler gefunden.", "info")
+            # Smarten Tipp anzeigen wenn vorhanden
+            tip = get_smart_tip(memory)
+            status = f"✔ {n} Fehler gefunden."
+            if tip:
+                status += f"  {tip}"
+            self._set_status(status, "info")
             self.result_tabs.set("Fehler")
+
+        # Glossar-Vorschläge prüfen
+        suggestions = get_glossary_suggestions(errors)
+        if suggestions:
+            self._show_glossary_suggestion(suggestions)
 
     def _highlight_errors(self, errors: list[dict]) -> None:
         try:
@@ -1780,6 +1873,117 @@ class MainWindow(ctk.CTk):
         self.plan_generate_btn.configure(state="normal", text="📄 Plan als Markdown generieren")
         self._set_status(f"Plan-Erstellung fehlgeschlagen: {msg}", "error")
 
+    # ── Agent-Tab Methoden ──────────────────────────────────────
+
+    def _refresh_agent_tab(self) -> None:
+        """Aktualisiert die Agent-Anzeige mit aktuellem Gedächtnis."""
+        from app.agent_memory import load_memory
+        memory = load_memory()
+        tw = self.agent_display._textbox
+
+        self.agent_display.configure(state="normal")
+        tw.delete("1.0", "end")
+
+        # Profil
+        tw.insert("end", "📊 Schreibprofil\n", "heading")
+        checks = memory.get("total_checks", 0)
+        words = memory.get("total_words", 0)
+        errors = memory.get("total_errors", 0)
+        accepted = memory.get("corrections_accepted", 0)
+        rejected = memory.get("corrections_rejected", 0)
+
+        tw.insert("end", "  Prüfungen:  ", "label")
+        tw.insert("end", f"{checks}\n", "value")
+        tw.insert("end", "  Geprüfte Wörter:  ", "label")
+        tw.insert("end", f"{words:,}\n".replace(",", "."), "value")
+        tw.insert("end", "  Gefundene Fehler:  ", "label")
+        tw.insert("end", f"{errors}\n", "value")
+        if checks > 0:
+            avg = round(errors / checks, 1)
+            tw.insert("end", "  Ø Fehler/Text:  ", "label")
+            tw.insert("end", f"{avg}\n", "value")
+        if accepted + rejected > 0:
+            rate = round(accepted / (accepted + rejected) * 100)
+            tw.insert("end", "  Akzeptanzrate:  ", "label")
+            tw.insert("end", f"{rate}% ({accepted} akzeptiert, {rejected} abgelehnt)\n", "value")
+
+        # Stil
+        style = memory.get("style", "")
+        if style:
+            tw.insert("end", "\n  Bevorzugter Stil:  ", "label")
+            tw.insert("end", f"{style}\n", "value")
+
+        # Schwächen
+        weak = memory.get("weak_areas", [])
+        if weak:
+            tw.insert("end", "\n⚠ Schwächen\n", "heading")
+            for w in weak:
+                tw.insert("end", f"  • {w}\n", "weak")
+
+        # Stärken
+        strong = memory.get("strong_areas", [])
+        if strong:
+            tw.insert("end", "\n✔ Stärken\n", "heading")
+            for s in strong:
+                tw.insert("end", f"  • {s}\n", "strong")
+
+        # Top Fehlerpatterns
+        patterns = memory.get("patterns", [])
+        if patterns:
+            tw.insert("end", "\n📈 Häufigste Fehler\n", "heading")
+            for p in patterns[:5]:
+                count = p.get("count", 0)
+                pattern = p.get("pattern", "")
+                tw.insert("end", f"  {count}x  ", "label")
+                tw.insert("end", f"{pattern}\n", "value")
+
+        # Glossar
+        glossary = memory.get("glossary", [])
+        tw.insert("end", f"\n📖 Glossar ({len(glossary)} Wörter)\n", "heading")
+        if glossary:
+            tw.insert("end", f"  {', '.join(glossary)}\n", "glossary")
+        else:
+            tw.insert("end", "  (leer -- Wörter hinzufügen die nie korrigiert werden sollen)\n", "glossary")
+
+        # Tipp
+        tip = get_smart_tip(memory)
+        if tip:
+            tw.insert("end", f"\n{tip}\n", "tip")
+
+        # Letztes Update
+        updated = memory.get("last_updated", "")
+        if updated:
+            tw.insert("end", f"\nLetzte Aktualisierung: {updated}\n", "glossary")
+
+        self.agent_display.configure(state="disabled")
+
+    def _add_glossary_word(self) -> None:
+        """Fügt ein Wort aus dem Eingabefeld zum Glossar hinzu."""
+        word = self.glossary_entry.get().strip()
+        if not word:
+            return
+        add_to_glossary(word)
+        self.glossary_entry.delete(0, "end")
+        self._refresh_agent_tab()
+        self._set_status(f"'{word}' zum Glossar hinzugefügt.", "success")
+
+    def _clear_agent_memory(self) -> None:
+        """Setzt das Agent-Gedächtnis zurück."""
+        from app.agent_memory import clear_memory
+        clear_memory()
+        self._refresh_agent_tab()
+        self._set_status("Agent-Gedächtnis zurückgesetzt.", "info")
+
+    def _show_glossary_suggestion(self, suggestions: list[str]) -> None:
+        """Zeigt Glossar-Vorschläge für erkannte Eigennamen."""
+        if not suggestions:
+            return
+        words = ", ".join(suggestions)
+        # Info in der Statusleiste
+        self.summary_label.configure(
+            text=f"📖 Neue Wörter erkannt: {words} — Im 🧠 Agent-Tab zum Glossar hinzufügen"
+        )
+
     # ── Clipboard / Paste / Copy / Clear ───────────────────────
 
     def _on_paste(self) -> None:
@@ -1819,6 +2023,7 @@ class MainWindow(ctk.CTk):
         if text:
             try:
                 pyperclip.copy(text)
+                record_acceptance(True)  # Agent merkt sich: Korrektur akzeptiert
                 self._set_status("Korrektur kopiert!", "success")
             except Exception as e:
                 logger.error("Clipboard copy error: %s", e)

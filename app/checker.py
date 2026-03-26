@@ -62,10 +62,56 @@ Beantworte die Frage des Nutzers kurz und hilfreich.
 Nutzer: {question}"""
 
 
-def build_prompt(text: str, language: str = "de") -> str:
-    """Build the full prompt for the KI backend."""
+def build_prompt(text: str, language: str = "de", agent_context: dict = None) -> str:
+    """Build the full prompt with optional agent context (Gedächtnis).
+
+    agent_context kann enthalten: glossary, weak_areas, style, show_reasoning.
+    """
     lang_name = LANGUAGES.get(language, "Deutsch")
-    return PROMPT_TEMPLATE.format(language=lang_name, text=text)
+    base = PROMPT_TEMPLATE.format(language=lang_name, text=text)
+
+    # Agent-Kontext hinzufügen wenn vorhanden
+    if agent_context:
+        extras = []
+
+        # Glossar: Wörter die nicht korrigiert werden sollen
+        glossary = agent_context.get("glossary", [])
+        if glossary:
+            extras.append(
+                f"WICHTIG: Folgende Begriffe sind korrekt und dürfen NICHT verändert werden: "
+                f"{', '.join(glossary)}"
+            )
+
+        # Stil-Präferenz
+        style = agent_context.get("style", "")
+        if style:
+            extras.append(f"Der Nutzer bevorzugt folgenden Schreibstil: {style}")
+
+        # Schwächen: besonders genau prüfen
+        weak = agent_context.get("weak_areas", [])
+        if weak:
+            extras.append(
+                f"Achte besonders auf diese häufigen Fehler des Nutzers: "
+                f"{', '.join(weak)}"
+            )
+
+        # Begründungen
+        if agent_context.get("show_reasoning", True):
+            extras.append(
+                "Gib bei jedem Fehler eine ausführliche Erklärung "
+                "warum es falsch ist und wie man es sich merken kann."
+            )
+        else:
+            extras.append("Halte die Erklärungen kurz (1 Satz pro Fehler).")
+
+        if extras:
+            context_block = "\n".join(extras)
+            base = base.replace(
+                "Hier ist der zu prüfende Text:",
+                f"{context_block}\n\nHier ist der zu prüfende Text:",
+            )
+
+    return base
 
 
 def build_translate_prompt(text: str, target_language: str = "Englisch") -> str:
@@ -275,8 +321,9 @@ def _validate_result(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def check_text(backend: BaseBackend, text: str, language: str = "de") -> dict[str, Any]:
-    """Run a full text check using the given backend."""
+def check_text(backend: BaseBackend, text: str, language: str = "de",
+               agent_context: dict = None) -> dict[str, Any]:
+    """Run a full text check using the given backend with optional agent context."""
     backend_name = type(backend).__name__
     text_len = len(text)
     logger.info(
@@ -284,9 +331,9 @@ def check_text(backend: BaseBackend, text: str, language: str = "de") -> dict[st
         backend_name, language, text_len,
     )
 
-    # Build prompt
+    # Build prompt (mit Agent-Kontext wenn vorhanden)
     t0 = time.time()
-    prompt = build_prompt(text, language)
+    prompt = build_prompt(text, language, agent_context)
     prompt_len = len(prompt)
     logger.info("Prompt erstellt: %d zeichen (%.1fms)", prompt_len, (time.time() - t0) * 1000)
 
