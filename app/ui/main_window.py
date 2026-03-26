@@ -90,9 +90,9 @@ class MainWindow(ctk.CTk):
         self.bind("<Control-k>", lambda e: self._on_tool_quick("shorten"))
         self.bind("<Control-e>", lambda e: self._on_tool_quick("expand"))
 
-        # Auto-collapse sidebar when window gets narrow
-        self._last_width = self.winfo_width()
-        self._check_sidebar_size()
+        # Auto-collapse sidebar -- starte verzögert nach dem Fenster-Aufbau
+        self._last_width = 0
+        self.after(500, self._check_sidebar_size)
 
         # Hotkey listener + clean shutdown
         self._clipboard.start()
@@ -547,8 +547,8 @@ class MainWindow(ctk.CTk):
             command=self._clear_agent_memory,
         ).grid(row=0, column=2)
 
-        # Initial füllen
-        self._refresh_agent_tab()
+        # Agent-Tab verzögert füllen (nach Fenster-Aufbau)
+        self.after(300, self._refresh_agent_tab)
 
         # Summary
         self.summary_label = ctk.CTkLabel(
