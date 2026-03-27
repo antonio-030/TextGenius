@@ -82,9 +82,15 @@ def load_oauth_token() -> dict:
 
 
 def is_token_expired(oauth: dict) -> bool:
-    """Check if the token has expired (expiresAt is in milliseconds)."""
+    """Check if the token is expired or will expire within 10 minutes.
+
+    Proaktiver Refresh: 10 Minuten vor Ablauf schon refreshen,
+    nicht erst wenn komplett abgelaufen.
+    """
     expires_at = oauth.get("expiresAt", 0)
-    return time.time() * 1000 > expires_at
+    # 10 Minuten Puffer (600.000 ms)
+    buffer_ms = 10 * 60 * 1000
+    return time.time() * 1000 > (expires_at - buffer_ms)
 
 
 def refresh_token(oauth: dict) -> dict:
@@ -130,11 +136,18 @@ def refresh_token(oauth: dict) -> dict:
 
 
 def _get_valid_token() -> str:
-    """Get a valid access token, refreshing if expired."""
+    """Get a valid access token, refreshing proaktiv 10 Min vor Ablauf."""
     oauth = load_oauth_token()
     if is_token_expired(oauth):
-        logger.info("Token abgelaufen, refreshe...")
-        oauth = refresh_token(oauth)
+        logger.info("Token läuft bald ab oder ist abgelaufen, refreshe...")
+        try:
+            oauth = refresh_token(oauth)
+        except ValueError as e:
+            logger.error("Token-Refresh fehlgeschlagen: %s", e)
+            raise ValueError(
+                "Der OAuth-Token konnte nicht erneuert werden.\n"
+                "Bitte in den Einstellungen neu einloggen."
+            )
     return oauth["accessToken"]
 
 
