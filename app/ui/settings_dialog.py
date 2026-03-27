@@ -177,10 +177,20 @@ class SettingsDialog(ctk.CTkToplevel):
         login_row.grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="ew")
 
         self.login_btn = ctk.CTkButton(
-            login_row, text="Mit claude.ai einloggen", width=200,
+            login_row, text="Mit claude.ai einloggen", width=180,
             command=self._start_claude_login,
         )
         self.login_btn.pack(side="left", padx=4, pady=4)
+
+        self.logout_btn = ctk.CTkButton(
+            login_row, text="Ausloggen", width=90,
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            border_color=("gray70", "gray30"),
+            hover_color=("#D32F2F", "#D32F2F"),
+            command=self._claude_logout,
+        )
+        self.logout_btn.pack(side="left", padx=4, pady=4)
 
         self.login_status = ctk.CTkLabel(
             login_row, text="Prüfe...", font=ctk.CTkFont(size=12),
@@ -531,6 +541,47 @@ class SettingsDialog(ctk.CTkToplevel):
                 text="Nicht eingeloggt", text_color="#D32F2F",
             )
             self.login_btn.configure(text="Mit claude.ai einloggen")
+
+    def _claude_logout(self):
+        """Loggt aus Claude aus und löscht den Token."""
+        self.logout_btn.configure(state="disabled", text="...")
+
+        def run():
+            try:
+                # Claude CLI Logout
+                result = subprocess.run(
+                    ["claude", "auth", "logout"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=0x08000000,
+                )
+                # Credentials-Datei bereinigen
+                from pathlib import Path
+                creds_path = Path.home() / ".claude" / ".credentials.json"
+                if creds_path.exists():
+                    import json
+                    with open(creds_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if "claudeAiOauth" in data:
+                        del data["claudeAiOauth"]
+                    with open(creds_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+
+                self.after(0, self._on_logout_done, True)
+            except Exception as e:
+                logger.error("Logout fehlgeschlagen: %s", e)
+                self.after(0, self._on_logout_done, False)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_logout_done(self, success: bool):
+        if not self._is_alive():
+            return
+        self.logout_btn.configure(state="normal", text="Ausloggen")
+        if success:
+            self.login_status.configure(text="Ausgeloggt", text_color="#EF6C00")
+            self.login_btn.configure(text="Mit claude.ai einloggen")
+        else:
+            self.login_status.configure(text="Logout fehlgeschlagen", text_color="#D32F2F")
 
     def _start_claude_login(self):
         """Open browser for Claude OAuth login (background)."""
