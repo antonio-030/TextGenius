@@ -463,22 +463,22 @@ class MainWindow(ctk.CTk):
 
         # Planer-Verlauf: Chat-ähnlich (KI fragt, User antwortet)
         self.plan_display = ctk.CTkTextbox(
-            tab_plan, font=ctk.CTkFont(family="Segoe UI", size=12),
+            tab_plan, font=ctk.CTkFont(family="Segoe UI", size=14),
             corner_radius=6, state="disabled", wrap="word",
             fg_color=("gray96", "gray12"),
         )
         self.plan_display.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
 
-        # Tags für Formatierung
+        # Tags für Formatierung -- größer und besser lesbar
         ptw = self.plan_display._textbox
-        ptw.tag_config("planner", foreground="#8B5CF6", font=("Segoe UI", 11, "bold"))
-        ptw.tag_config("user", foreground="#2563EB", font=("Segoe UI", 11, "bold"))
-        ptw.tag_config("question", font=("Segoe UI", 12), spacing3=4, lmargin1=12, lmargin2=12)
-        ptw.tag_config("answer", font=("Segoe UI", 12), spacing3=4, lmargin1=12, lmargin2=12)
-        ptw.tag_config("option", foreground="#10B981", font=("Segoe UI", 11))
-        ptw.tag_config("system", foreground="gray50", font=("Segoe UI", 11, "italic"),
-                       lmargin1=12, lmargin2=12, spacing3=6)
-        ptw.tag_config("sep", font=("Segoe UI", 3), spacing1=4, spacing3=4)
+        ptw.tag_config("planner", foreground="#8B5CF6", font=("Segoe UI", 14, "bold"), spacing1=6)
+        ptw.tag_config("user", foreground="#2563EB", font=("Segoe UI", 13, "bold"))
+        ptw.tag_config("question", font=("Segoe UI", 14), spacing3=8, lmargin1=14, lmargin2=14)
+        ptw.tag_config("answer", font=("Segoe UI", 14), spacing3=6, lmargin1=14, lmargin2=14)
+        ptw.tag_config("option", foreground="#10B981", font=("Segoe UI", 13))
+        ptw.tag_config("system", foreground="gray50", font=("Segoe UI", 13),
+                       lmargin1=14, lmargin2=14, spacing3=8)
+        ptw.tag_config("sep", font=("Segoe UI", 5), spacing1=6, spacing3=6)
 
         # Antwort-Bereich: Vorschläge als Buttons + Freitext
         self.plan_answer_frame = ctk.CTkFrame(tab_plan, fg_color="transparent")
