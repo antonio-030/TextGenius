@@ -2,7 +2,7 @@
 ; Kein Admin nötig, installiert nach %LOCALAPPDATA%\TextGenius
 
 #define MyAppName "TextGenius"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "TextGenius"
 #define MyAppExeName "TextGenius.exe"
 
