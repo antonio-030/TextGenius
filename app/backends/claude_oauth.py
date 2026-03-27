@@ -136,18 +136,40 @@ def refresh_token(oauth: dict) -> dict:
 
 
 def _get_valid_token() -> str:
-    """Get a valid access token, refreshing proaktiv 10 Min vor Ablauf."""
+    """Get a valid access token, refreshing proaktiv 10 Min vor Ablauf.
+
+    Falls Refresh fehlschlägt, versucht automatisch `claude auth login`.
+    """
     oauth = load_oauth_token()
-    if is_token_expired(oauth):
-        logger.info("Token läuft bald ab oder ist abgelaufen, refreshe...")
-        try:
-            oauth = refresh_token(oauth)
-        except ValueError as e:
-            logger.error("Token-Refresh fehlgeschlagen: %s", e)
-            raise ValueError(
-                "Der OAuth-Token konnte nicht erneuert werden.\n"
-                "Bitte in den Einstellungen neu einloggen."
-            )
+    if not is_token_expired(oauth):
+        return oauth["accessToken"]
+
+    # Token läuft bald ab oder ist abgelaufen -- refreshen
+    logger.info("Token läuft bald ab, versuche Refresh...")
+    try:
+        oauth = refresh_token(oauth)
+        return oauth["accessToken"]
+    except ValueError:
+        logger.warning("Refresh fehlgeschlagen, versuche Re-Login via Claude CLI...")
+
+    # Fallback: Claude CLI Login starten (erneuert den Token komplett)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["claude", "auth", "login", "--no-open"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=0x08000000,
+        )
+        # Token nochmal laden -- CLI hat ihn hoffentlich erneuert
+        oauth = load_oauth_token()
+        if not is_token_expired(oauth):
+            logger.info("Token durch CLI-Re-Login erneuert")
+            return oauth["accessToken"]
+    except Exception as e:
+        logger.warning("CLI Re-Login fehlgeschlagen: %s", e)
+
+    # Letzter Versuch: Token trotzdem verwenden (vielleicht funktioniert er noch)
+    logger.warning("Verwende möglicherweise abgelaufenen Token")
     return oauth["accessToken"]
 
 
