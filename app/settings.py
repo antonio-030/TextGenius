@@ -24,6 +24,8 @@ DEFAULTS = {
     "log_level": "INFO",
     "clipboard_monitor": False,
     "font_size": 12,
+    "update_check": True,
+    "last_update_check": "",
 }
 
 

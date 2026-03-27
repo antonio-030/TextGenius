@@ -25,6 +25,7 @@ from app.agent_memory import (
 )
 from app.clipboard import ClipboardMonitor
 from app.history import save_draft, load_draft, add_to_history, get_history
+from app.updater import check_for_update, should_check
 from app.settings import get_setting
 from app.templates import TEMPLATES
 from app.ui.settings_dialog import SettingsDialog
@@ -98,6 +99,10 @@ class MainWindow(ctk.CTk):
         self._clipboard.start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Update-Check im Hintergrund (verzögert)
+        if get_setting(self.settings, "update_check"):
+            self.after(2000, self._check_for_updates)
+
     # ── Sidebar ────────────────────────────────────────────────
 
     def _build_sidebar(self) -> None:
@@ -169,6 +174,15 @@ class MainWindow(ctk.CTk):
         if get_setting(self.settings, "backend") == "claude_abo":
             self.sidebar_usage_frame.grid(row=9, column=0, sticky="ew")
             self._fetch_sidebar_usage()
+
+        # Update-Banner (unsichtbar bis Update gefunden, row 10)
+        self.update_banner = ctk.CTkButton(
+            self.sidebar, text="", height=30, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color="#2563EB",
+            hover_color="#1D4ED8", text_color="white",
+            command=self._on_update_click,
+        )
+        # Wird erst sichtbar wenn ein Update gefunden wird
 
         # Bottom: settings + theme + about (rows 11-13)
         self.settings_button = self._sidebar_btn(
@@ -600,6 +614,43 @@ class MainWindow(ctk.CTk):
 
     def _toggle_theme(self) -> None:
         ctk.set_appearance_mode(self.theme_switch.get())
+
+    # ── Auto-Update ──────────────────────────────────────────
+
+    def _check_for_updates(self) -> None:
+        """Prüft auf Updates im Hintergrund."""
+        last_check = self.settings.get("last_update_check", "")
+        if not should_check(last_check):
+            return
+
+        def run():
+            result = check_for_update()
+            # Timestamp speichern
+            from app.settings import save_settings
+            self.settings["last_update_check"] = result["checked_at"]
+            save_settings(self.settings)
+            if result["available"]:
+                self.after(0, self._show_update_banner, result)
+
+        self._pool.submit(run)
+
+    def _show_update_banner(self, update_info: dict) -> None:
+        """Zeigt das Update-Banner in der Sidebar."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        version = update_info.get("latest", "?")
+        self._update_url = update_info.get("download_url", "")
+        self.update_banner.configure(text=f"🔄 Update v{version} verfügbar")
+        self.update_banner.grid(row=10, column=0, padx=12, pady=(6, 0), sticky="ew")
+
+    def _on_update_click(self) -> None:
+        """Öffnet die Download-Seite für das Update."""
+        import webbrowser
+        url = getattr(self, "_update_url", "https://github.com/antonio-030/TextGenius/releases/latest")
+        webbrowser.open(url)
 
     def _on_hotkey_check(self, text: str) -> None:
         self.after(0, self._do_hotkey_check, text)

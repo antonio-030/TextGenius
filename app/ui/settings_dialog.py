@@ -274,7 +274,14 @@ class SettingsDialog(ctk.CTkToplevel):
             tab, text="Zwischenablage überwachen",
         )
         self.clipboard_switch.grid(
-            row=2, column=0, columnspan=2, padx=12, pady=16, sticky="w",
+            row=2, column=0, columnspan=2, padx=12, pady=8, sticky="w",
+        )
+
+        self.update_switch = ctk.CTkSwitch(
+            tab, text="Automatisch nach Updates suchen",
+        )
+        self.update_switch.grid(
+            row=3, column=0, columnspan=2, padx=12, pady=(0, 16), sticky="w",
         )
 
     # ── Bottom buttons ─────────────────────────────────────────
@@ -320,6 +327,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
         if self.settings.get("clipboard_monitor"):
             self.clipboard_switch.select()
+        if self.settings.get("update_check", True):
+            self.update_switch.select()
 
         self._on_backend_changed(self.settings.get("backend", "ollama"))
 
@@ -643,6 +652,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.settings["language"] = self.language_menu.get()
         self.settings["font_size"] = int(self.fontsize_menu.get())
         self.settings["clipboard_monitor"] = bool(self.clipboard_switch.get())
+        self.settings["update_check"] = bool(self.update_switch.get())
 
         save_settings(self.settings)
         self.result = self.settings
