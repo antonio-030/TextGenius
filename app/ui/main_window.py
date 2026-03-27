@@ -175,14 +175,8 @@ class MainWindow(ctk.CTk):
             self.sidebar_usage_frame.grid(row=9, column=0, sticky="ew")
             self._fetch_sidebar_usage()
 
-        # Update-Banner (unsichtbar bis Update gefunden, row 10)
-        self.update_banner = ctk.CTkButton(
-            self.sidebar, text="", height=30, corner_radius=6,
-            font=ctk.CTkFont(size=11), fg_color="#2563EB",
-            hover_color="#1D4ED8", text_color="white",
-            command=self._on_update_click,
-        )
-        # Wird erst sichtbar wenn ein Update gefunden wird
+        # Update-Info wird im About-Dialog angezeigt (nicht in Sidebar)
+        self._update_info = None
 
         # Bottom: settings + theme + about (rows 11-13)
         self.settings_button = self._sidebar_btn(
@@ -618,39 +612,23 @@ class MainWindow(ctk.CTk):
     # ── Auto-Update ──────────────────────────────────────────
 
     def _check_for_updates(self) -> None:
-        """Prüft auf Updates im Hintergrund."""
+        """Prüft auf Updates im Hintergrund, speichert Ergebnis für About-Dialog."""
         last_check = self.settings.get("last_update_check", "")
         if not should_check(last_check):
             return
 
         def run():
             result = check_for_update()
-            # Timestamp speichern
             from app.settings import save_settings
             self.settings["last_update_check"] = result["checked_at"]
             save_settings(self.settings)
-            if result["available"]:
-                self.after(0, self._show_update_banner, result)
+            self.after(0, self._on_update_checked, result)
 
         self._pool.submit(run)
 
-    def _show_update_banner(self, update_info: dict) -> None:
-        """Zeigt das Update-Banner in der Sidebar."""
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
-        version = update_info.get("latest", "?")
-        self._update_url = update_info.get("download_url", "")
-        self.update_banner.configure(text=f"🔄 Update v{version} verfügbar")
-        self.update_banner.grid(row=10, column=0, padx=12, pady=(6, 0), sticky="ew")
-
-    def _on_update_click(self) -> None:
-        """Öffnet die Download-Seite für das Update."""
-        import webbrowser
-        url = getattr(self, "_update_url", "https://github.com/antonio-030/TextGenius/releases/latest")
-        webbrowser.open(url)
+    def _on_update_checked(self, result: dict) -> None:
+        """Speichert das Update-Ergebnis für den About-Dialog."""
+        self._update_info = result
 
     def _on_hotkey_check(self, text: str) -> None:
         self.after(0, self._do_hotkey_check, text)
@@ -663,95 +641,113 @@ class MainWindow(ctk.CTk):
         self.focus_force()
 
     def _show_about(self) -> None:
-        """Info-Seite: Über uns, Copyright, Links, Tastenkürzel."""
+        """Info-Seite mit Version, Update-Status, Copyright, Shortcuts, Links."""
         about = ctk.CTkToplevel(self)
         about.title(f"Über {APP_NAME}")
-        about.geometry("420x480")
+        about.geometry("420x540")
         about.resizable(False, False)
         about.transient(self)
         about.grab_set()
 
         # App-Name + Version
         ctk.CTkLabel(about, text=APP_NAME,
-                     font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(24, 2))
+                     font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(20, 2))
         ctk.CTkLabel(about, text=f"Version {APP_VERSION}",
-                     font=ctk.CTkFont(size=13), text_color="gray50").pack()
+                     font=ctk.CTkFont(size=14), text_color="gray50").pack()
         ctk.CTkLabel(about, text="KI-gestützter Rechtschreib- und Grammatikprüfer",
-                     font=ctk.CTkFont(size=12), text_color="gray60").pack(pady=(4, 0))
+                     font=ctk.CTkFont(size=12), text_color="gray60").pack(pady=(2, 0))
+
+        # ── Update-Status ──
+        update_frame = ctk.CTkFrame(about, corner_radius=8)
+        update_frame.pack(fill="x", padx=30, pady=(12, 0))
+
+        if self._update_info and self._update_info.get("available"):
+            # Update verfügbar
+            v = self._update_info.get("latest", "?")
+            ctk.CTkLabel(
+                update_frame, text=f"🔄 Update v{v} verfügbar!",
+                font=ctk.CTkFont(size=13, weight="bold"), text_color="#2563EB",
+            ).pack(padx=12, pady=(8, 4), anchor="w")
+
+            ctk.CTkButton(
+                update_frame, text="Jetzt herunterladen", height=30,
+                corner_radius=6, font=ctk.CTkFont(size=12),
+                command=lambda: self._open_url(
+                    self._update_info.get("download_url",
+                        "https://github.com/antonio-030/TextGenius/releases/latest")
+                ),
+            ).pack(padx=12, pady=(0, 8), anchor="w")
+        else:
+            # App ist aktuell
+            ctk.CTkLabel(
+                update_frame, text="✔ App ist aktuell",
+                font=ctk.CTkFont(size=12), text_color="#2E7D32",
+            ).pack(padx=12, pady=8, anchor="w")
 
         # Trennlinie
         ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
-            fill="x", padx=30, pady=16)
+            fill="x", padx=30, pady=12)
 
-        # Über uns / Copyright
-        info_frame = ctk.CTkFrame(about, fg_color="transparent")
-        info_frame.pack(fill="x", padx=30)
+        # Herausgeber + Copyright
+        info = ctk.CTkFrame(about, fg_color="transparent")
+        info.pack(fill="x", padx=30)
 
-        ctk.CTkLabel(info_frame, text="Herausgeber",
+        ctk.CTkLabel(info, text="Herausgeber",
                      font=ctk.CTkFont(size=11, weight="bold"),
                      text_color="gray50").pack(anchor="w")
-        ctk.CTkLabel(info_frame, text="techlogia – Technologie & Automation",
+        ctk.CTkLabel(info, text="techlogia – Technologie & Automation",
                      font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(2, 0))
-
-        # Link zu techlogia.de
-        link = ctk.CTkLabel(info_frame, text="www.techlogia.de",
+        link = ctk.CTkLabel(info, text="www.techlogia.de",
                             font=ctk.CTkFont(size=13), text_color="#2563EB",
                             cursor="hand2")
         link.pack(anchor="w", pady=(2, 0))
         link.bind("<Button-1>", lambda e: self._open_url("https://techlogia.de"))
-
-        ctk.CTkLabel(info_frame, text=f"© 2026 techlogia. Alle Rechte vorbehalten.",
-                     font=ctk.CTkFont(size=11), text_color="gray50").pack(anchor="w", pady=(8, 0))
+        ctk.CTkLabel(info, text="© 2026 techlogia. Alle Rechte vorbehalten.",
+                     font=ctk.CTkFont(size=11), text_color="gray50").pack(anchor="w", pady=(6, 0))
 
         # Trennlinie
         ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
-            fill="x", padx=30, pady=16)
+            fill="x", padx=30, pady=12)
 
         # Tastenkürzel
-        shortcuts_frame = ctk.CTkFrame(about, fg_color="transparent")
-        shortcuts_frame.pack(fill="x", padx=30)
-
-        ctk.CTkLabel(shortcuts_frame, text="Tastenkürzel",
+        sc = ctk.CTkFrame(about, fg_color="transparent")
+        sc.pack(fill="x", padx=30)
+        ctk.CTkLabel(sc, text="Tastenkürzel",
                      font=ctk.CTkFont(size=11, weight="bold"),
                      text_color="gray50").pack(anchor="w")
-
-        for shortcut, action in [
-            ("Ctrl + Enter", "Text prüfen"),
-            ("Ctrl + Shift + P", "Zwischenablage prüfen (global)"),
-            ("Ctrl + V", "Text einfügen"),
+        for key, action in [
+            ("Ctrl+Enter", "Text prüfen"),
+            ("Ctrl+Shift+P", "Zwischenablage prüfen"),
+            ("Ctrl+T", "Übersetzen"),
+            ("Ctrl+K", "Kürzen"),
+            ("Ctrl+E", "Erweitern"),
         ]:
-            row = ctk.CTkFrame(shortcuts_frame, fg_color="transparent")
-            row.pack(fill="x", pady=1)
-            ctk.CTkLabel(row, text=shortcut, font=ctk.CTkFont(size=11, weight="bold"),
-                         width=140, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=action, font=ctk.CTkFont(size=11),
-                         text_color="gray60", anchor="w").pack(side="left")
+            r = ctk.CTkFrame(sc, fg_color="transparent")
+            r.pack(fill="x", pady=1)
+            ctk.CTkLabel(r, text=key, font=ctk.CTkFont(size=11, weight="bold"),
+                         width=120, anchor="w").pack(side="left")
+            ctk.CTkLabel(r, text=action, font=ctk.CTkFont(size=11),
+                         text_color="gray60").pack(side="left")
 
         # Trennlinie
         ctk.CTkFrame(about, height=1, fg_color=("gray80", "gray30")).pack(
-            fill="x", padx=30, pady=16)
+            fill="x", padx=30, pady=12)
 
         # Links
-        links_frame = ctk.CTkFrame(about, fg_color="transparent")
-        links_frame.pack(fill="x", padx=30)
-
-        gh_link = ctk.CTkLabel(links_frame, text="GitHub: antonio-030/TextGenius",
-                               font=ctk.CTkFont(size=11), text_color="#2563EB",
-                               cursor="hand2")
-        gh_link.pack(anchor="w")
-        gh_link.bind("<Button-1>", lambda e: self._open_url(
-            "https://github.com/antonio-030/TextGenius"))
-
-        issue_link = ctk.CTkLabel(links_frame, text="Fehler melden / Feature anfragen",
-                                  font=ctk.CTkFont(size=11), text_color="#2563EB",
-                                  cursor="hand2")
-        issue_link.pack(anchor="w", pady=(2, 0))
-        issue_link.bind("<Button-1>", lambda e: self._open_url(
-            "https://github.com/antonio-030/TextGenius/issues"))
+        lf = ctk.CTkFrame(about, fg_color="transparent")
+        lf.pack(fill="x", padx=30)
+        for text, url in [
+            ("GitHub: antonio-030/TextGenius", "https://github.com/antonio-030/TextGenius"),
+            ("Fehler melden / Feature anfragen", "https://github.com/antonio-030/TextGenius/issues"),
+        ]:
+            l = ctk.CTkLabel(lf, text=text, font=ctk.CTkFont(size=11),
+                             text_color="#2563EB", cursor="hand2")
+            l.pack(anchor="w", pady=1)
+            l.bind("<Button-1>", lambda e, u=url: self._open_url(u))
 
         # Schließen
         ctk.CTkButton(about, text="Schließen", width=100,
-                      command=about.destroy).pack(pady=(16, 20))
+                      command=about.destroy).pack(pady=(12, 16))
 
     def _open_url(self, url: str) -> None:
         """Öffnet eine URL im Standard-Browser."""
